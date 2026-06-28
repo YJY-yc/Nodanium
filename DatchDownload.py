@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx
 import wx.adv
 import requests
@@ -7,7 +10,7 @@ from pathlib import Path
 from winotify import Notification, audio
 from concurrent.futures import ThreadPoolExecutor
 
-# 导入DownloadUI中的函数
+
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from DownloadUI import add_download_record, refresh_download_list, download_history, load_download_history, save_download_history
@@ -51,7 +54,7 @@ def create_download_window(parent, urls, thread_count, main_site, download_dir, 
     hbox.Add(end_and_export_btn, 0, wx.ALL|wx.CENTER, 5)
     vbox.Add(hbox, 0, wx.ALL|wx.CENTER, 10)
 
-    # 关键修复：将父窗口的download_items属性复制到新的下载窗口
+  
     if hasattr(parent, 'download_items') and parent.download_items:
         download_window.download_items = parent.download_items
 
@@ -106,7 +109,7 @@ def create_download_app():
     except:
         download_dir = os.path.join(os.getcwd(), "downloads")
     
-    # 添加文件夹名称输入框 - 修复：确保每个批量下载都有唯一名称
+  
     hbox_folder = wx.BoxSizer(wx.HORIZONTAL)
     folder_label = wx.StaticText(panel, label="文件夹名称:")
     import uuid
@@ -159,33 +162,33 @@ def on_import(frame, undownloaded_list):
         
         path = fileDialog.GetPath()
         try:
-            # 根据文件扩展名判断格式
+            
             if path.lower().endswith('.json'):
-                # JSON格式导入
+               
                 import json
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, list):
                         urls = []
-                        download_items = []  # 存储原始URL和文件名信息
+                        download_items = [] 
                         for item in data:
                             if isinstance(item, dict) and 'url' in item:
                                 url = item['url']
                                 filename = item.get('filename', '')
-                                # 存储原始URL，不添加备注信息
+                              
                                 urls.append(url)
-                                # 同时存储下载项目信息
+                              
                                 download_items.append({"url": url, "filename": filename})
                         wx.MessageBox(f"成功导入 {len(urls)} 个网址", "提示", wx.OK|wx.ICON_INFORMATION)
                         undownloaded_list.Set(urls) 
-                        # 将下载项目信息存储到frame中，供后续使用
+              
                         frame.download_items = download_items
                         return urls
                     else:
                         wx.MessageBox("JSON格式错误：应为数组格式", "错误", wx.OK|wx.ICON_ERROR)
                         return []
             else:
-                # 原有TXT格式导入
+                # TXT格式导入
                 with open(path, 'r', encoding='utf-8') as f:
                     urls = [line.strip() for line in f if line.strip()]
                     wx.MessageBox(f"成功导入 {len(urls)} 个网址", "提示", wx.OK|wx.ICON_INFORMATION)
@@ -227,54 +230,53 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
         wx.MessageBox("请先导入网址文件", "错误", wx.OK|wx.ICON_ERROR)
         return
     
-    # 在下载开始时添加批量下载记录（仅在list_ctrl和image_list不为None时）
+
     if list_ctrl and image_list:
-        # 解析URL列表，提取URL和文件名信息
+      
         download_items = []
         
-        # 检查是否有预先存储的下载项目信息（来自JSON导入）
+
         if hasattr(window, 'download_items') and window.download_items:
             download_items = window.download_items
         else:
-            # 如果没有预先存储的信息，使用原有解析逻辑
+
             for url_item in urls:
                 url = url_item
                 filename = ""
                 
-                # 解析JSON格式的备注信息（兼容旧格式）
+ 
                 if " (文件名: " in url_item and url_item.endswith(")"):
                     parts = url_item.split(" (文件名: ")
                     if len(parts) == 2:
                         url = parts[0]
-                        filename = parts[1][:-1]  # 去掉末尾的括号
+                        filename = parts[1][:-1]  
                 
                 download_items.append({"url": url, "filename": filename})
-        
-        # 修复：保存路径应该是父目录，而不是具体的子文件夹路径
+       
         parent_dir = os.path.dirname(download_dir)
         
-        # 为每个批量下载记录生成唯一标识符
+     
         import uuid
-        batch_id = str(uuid.uuid4())  # 使用完整UUID作为唯一标识
+        batch_id = str(uuid.uuid4()) 
         
-        # 确保download_history已经被正确加载
+       
         if not download_history:
             load_download_history()
             print("在添加记录前强制加载download_history")
         
-        # 添加批量下载文件夹记录，包含项目列表信息和唯一标识
+
         folder_record = add_download_record(
             url="批量下载文件夹", 
             filename=folder_name, 
-            save_path=parent_dir,  # 修改为父目录
+            save_path=parent_dir,  
             status="N/A", 
             file_size=0,
-            download_items=download_items,  # 添加下载项目列表
-            batch_id=batch_id  # 添加唯一标识符
+            download_items=download_items, 
+            batch_id=batch_id 
         )
         refresh_download_list(list_ctrl, image_list)
     else:
-        # 如果没有list_ctrl和image_list，只进行下载不添加记录
+
         print("独立下载模式：不添加下载记录到主界面")
     
     if main_site and not main_site.endswith('/'):
@@ -292,12 +294,12 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                 break
             
             current_url = item['url']
-            item_filename = item.get('filename', '')  # 获取对应的文件名
+            item_filename = item.get('filename', '') 
             
             if main_site and not current_url.startswith('http'):
                 current_url = main_site + current_url
             
-            # 确保这里传递的是item_filename作为第四个参数
+       
             future = executor.submit(download_file, current_url, download_dir, False, item_filename)
             futures.append((current_url, future))
         
@@ -308,7 +310,7 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                     completed += 1
                     result = future.result()
                     if result:
-                        # 修复：直接使用URL字符串进行匹配删除
+        
                         try:
                             index = undownloaded_list.FindString(current_url)
                             if index != wx.NOT_FOUND:
@@ -322,9 +324,9 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                     futures.remove(url_future)
             wx.MilliSleep(50)
     
-    # 下载完成后更新文件夹状态（仅在list_ctrl和image_list不为None时）
+
     if list_ctrl and image_list:
-        # 增强文件夹统计：计算文件数量、文件夹大小等详细信息
+        # 计算文件数量、文件夹大小等详细信息
         folder_stats = {
             "file_count": 0,
             "folder_size": 0,
@@ -343,25 +345,25 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                     except:
                         folder_stats["failed_count"] += 1
         
-        # 修复：避免重新导入模块导致历史数据重置
+
         try:
-            # 使用之前导入的模块函数，避免重新导入
+
             print(f"开始更新记录，batch_id: {batch_id}, folder_name: {folder_name}")
             
-            # 确保download_history已经被正确加载
+            # download_history已经被正确加载
             if not download_history:
                 load_download_history()
                 
             print(f"当前记录数量: {len(download_history)}")
             
-            # 备份当前历史记录数量，用于检测是否被重置
+
             initial_count = len(download_history)
             
-            # 确定下载状态：如果被中途停止，状态为"已停止"，否则为"已完成"
+            # 确定下载状态
             final_status = "已停止" if stop_download else "已完成"
             print(f"下载状态: {final_status}, 完成数量: {completed}/{total}")
             
-            # 方法1：优先使用batch_id匹配
+
             updated = False
             for i, record in enumerate(download_history):
                 record_batch_id = record.get("batch_id")
@@ -369,18 +371,17 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                     print(f"找到batch_id匹配的记录，索引: {i}")
                     record["status"] = final_status
                     record["file_size"] = folder_stats["folder_size"]
-                    # 添加文件夹统计信息
+
                     record["file_count"] = folder_stats["file_count"]
                     record["success_count"] = folder_stats["success_count"]
                     record["failed_count"] = folder_stats["failed_count"]
-                    # 添加完成进度信息
+
                     record["completed"] = completed
                     record["total"] = total
                     updated = True
                     print(f"记录更新成功: {record}")
                     break
-            
-            # 方法2：如果batch_id匹配失败，使用文件夹名称和URL匹配
+     
             if not updated:
                 print("batch_id匹配失败，尝试文件夹名称匹配")
                 for i, record in enumerate(download_history):
@@ -389,37 +390,36 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                         print(f"找到文件夹名称匹配的记录，索引: {i}")
                         record["status"] = final_status
                         record["file_size"] = folder_stats["folder_size"]
-                        # 添加文件夹统计信息
+
                         record["file_count"] = folder_stats["file_count"]
                         record["success_count"] = folder_stats["success_count"]
                         record["failed_count"] = folder_stats["failed_count"]
                         record["completed"] = completed
                         record["total"] = total
-                        # 确保batch_id被正确设置
+
                         if "batch_id" not in record:
                             record["batch_id"] = batch_id
                         updated = True
                         print(f"记录更新成功: {record}")
                         break
             
-            # 方法3：如果仍然失败，检查历史记录是否被重置
+
             if not updated:
                 print("前两种方法都失败，检查历史记录状态")
                 current_count = len(download_history)
                 if current_count < initial_count:
                     print(f"警告：历史记录数量从{initial_count}减少到{current_count}，可能被重置")
-                    # 重新加载历史记录
+
                     load_download_history()
                     print(f"重新加载后记录数量: {len(download_history)}")
-                    
-                    # 重新尝试匹配
+
                     for i, record in enumerate(download_history):
                         record_batch_id = record.get("batch_id")
                         if record_batch_id and record_batch_id == batch_id:
                             print(f"重新加载后找到batch_id匹配的记录，索引: {i}")
                             record["status"] = final_status
                             record["file_size"] = folder_stats["folder_size"]
-                            # 添加文件夹统计信息
+
                             record["file_count"] = folder_stats["file_count"]
                             record["success_count"] = folder_stats["success_count"]
                             record["failed_count"] = folder_stats["failed_count"]
@@ -428,17 +428,17 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                             updated = True
                             break
             
-            # 方法4：如果仍然失败，直接通过索引更新最后一条匹配的记录
+
             if not updated:
                 print("重新加载后仍然匹配失败，尝试索引匹配")
-                # 查找最近添加的批量下载记录
+
                 for i in range(len(download_history)-1, -1, -1):
                     record = download_history[i]
                     if record.get("url") == "批量下载文件夹":
                         print(f"找到索引匹配的记录，索引: {i}")
                         record["status"] = final_status
                         record["file_size"] = folder_stats["folder_size"]
-                        # 添加文件夹统计信息
+
                         record["file_count"] = folder_stats["file_count"]
                         record["success_count"] = folder_stats["success_count"]
                         record["failed_count"] = folder_stats["failed_count"]
@@ -451,7 +451,7 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
             
             if not updated:
                 print("警告：未能找到匹配的记录进行更新")
-                # 作为最后手段，添加新记录
+
                 add_download_record(
                     url="批量下载文件夹", 
                     filename=folder_name, 
@@ -472,7 +472,7 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
             
         except Exception as e:
             print(f"更新记录时发生错误: {e}")
-            # 错误处理：无论如何都要保存记录
+
             import traceback
             traceback.print_exc()
         
@@ -499,7 +499,7 @@ def download_file(url, download_dir, add_single_record=True, filename=""):
             
         os.makedirs(download_dir, exist_ok=True)
         
-        # 优先使用传入的filename参数
+
         if not filename:  
             filename = os.path.basename(url)
             if not filename:
@@ -518,14 +518,14 @@ def download_file(url, download_dir, add_single_record=True, filename=""):
         print(f"文件保存成功: {local_path}")
         wx.CallAfter(show_download_complete_notification, local_path)
         
-        # 修改：只有在不是批量下载时才添加单个文件记录
+  
         if add_single_record:
             import sys
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
             from DownloadUI import add_download_record, refresh_download_list
             add_download_record(url, filename, download_dir, "已完成", os.path.getsize(local_path))
         
-        # 修改：只有在不是批量下载时才添加单个文件记录
+
         if add_single_record:
             import sys
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))

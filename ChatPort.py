@@ -1,3 +1,6 @@
+# Copyright (c) 2025 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx
 import socket
 import threading

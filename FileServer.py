@@ -1,3 +1,6 @@
+# Copyright (c) 2024-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx
 import wx.lib.newevent
 import os

@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx
 import wx.lib.mixins.listctrl as listmix
 import os
@@ -130,7 +133,7 @@ def get_file_icon(file_path, size=32):
                     
                     img = img.resize(icon_size, Image.Resampling.LANCZOS)
                     
-                    # 转换为wx.Bitmap
+                   
                     import io
                     img_bytes = io.BytesIO()
                     img.save(img_bytes, format='PNG')
@@ -379,7 +382,7 @@ def create_download_panel(parent):
     image_list = wx.ImageList(32, 32)
     download_list.AssignImageList(image_list, wx.IMAGE_LIST_SMALL)
     
-    download_list.InsertColumn(0, "", width=45)  # 图标列
+    download_list.InsertColumn(0, "", width=45)
     download_list.InsertColumn(1, "文件名", width=200)
     download_list.InsertColumn(2, "大小", width=100)
     download_list.InsertColumn(3, "状态", width=80)
@@ -422,7 +425,6 @@ def create_context_menu(list_ctrl):
    
     menu = wx.Menu()
     
-    # 菜单项
     open_item = menu.Append(wx.ID_OPEN, "打开")
     open_folder_item = menu.Append(wx.ID_ANY, "在文件夹中显示")
     show_items_item = menu.Append(wx.ID_ANY, "显示包含的项目") 
@@ -545,13 +547,13 @@ def on_menu_show_items(event, list_ctrl):
                             wx.MessageBox(f"成功导出 {len(download_items)} 个项目到 {export_path}", "导出成功", wx.OK | wx.ICON_INFORMATION)
                         
                         elif file_ext == '.json':
-                            # 导出为JSON格式
+                         
                             export_data = []
                             for item in download_items:
                                 url = item.get("url", "")
                                 filename = item.get("filename", "")
                                 
-                                # 如果文件名为空，从URL中提取文件名
+                           
                                 if not filename and url:
                                     filename = os.path.basename(url) or "download_file"
                                 
@@ -582,19 +584,19 @@ def on_menu_show_items(event, list_ctrl):
             wx.MessageBox("这不是批量下载文件夹记录或没有包含的项目信息", "提示", wx.OK | wx.ICON_INFORMATION)
 def refresh_download_list(list_ctrl, image_list):
     """刷新下载列表"""
-    # 重新加载下载历史，确保从JSON文件读取最新数据
+  
     load_download_history()
     
     list_ctrl.DeleteAllItems()
     image_list.RemoveAll()
     
-    icon_cache = {}  # 缓存图标索引
+    icon_cache = {} 
     
     for record in download_history:
-        # 获取文件路径
+  
         file_path = os.path.join(record["save_path"], record["filename"])
         
-        # 获取或创建图标索引
+ 
         ext = os.path.splitext(record["filename"])[1].lower()
         if ext not in icon_cache:
             icon = get_file_icon(file_path)
@@ -603,10 +605,9 @@ def refresh_download_list(list_ctrl, image_list):
         else:
             icon_index = icon_cache[ext]
         
-        # 插入带图标的项目
         index = list_ctrl.InsertItem(list_ctrl.GetItemCount(), icon_index)
         
-        # 格式化文件大小
+    
         file_size = record.get("file_size", 0)
         if file_size == 0:
             size_str = "未知"
@@ -629,12 +630,10 @@ def on_new_download(parent, list_ctrl, image_list):
     import os
     import threading
     
-    # 定义保存目录配置文件路径
     config_dir = os.path.join(os.environ['APPDATA'], 'Nodanium')
     dir_file = os.path.join(config_dir, 'dir.txt')
     
 
-    # 默认保存路径
     default_save_path = os.path.join(os.environ['USERPROFILE'], 'Downloads')
     if os.path.exists(dir_file):
         try:
@@ -644,14 +643,14 @@ def on_new_download(parent, list_ctrl, image_list):
                     default_save_path = saved_path
         except Exception as e:
             print(f"读取保存路径配置失败: {e}")
-    # 创建自定义对话框
+
     dlg = wx.Dialog(parent, title="新建下载", size=(600, 500))  # 增加对话框大小以容纳选项卡
     panel = wx.Panel(dlg)
     
-    # 创建选项卡控件
+
     notebook = wx.Notebook(panel)
     
-    # 创建布局管理器
+
     main_sizer = wx.BoxSizer(wx.VERTICAL)
     main_sizer.Add(notebook, 1, wx.EXPAND | wx.ALL, 5)
     
@@ -659,7 +658,7 @@ def on_new_download(parent, list_ctrl, image_list):
     single_panel = wx.Panel(notebook)
     single_sizer = wx.BoxSizer(wx.VERTICAL)
     
-    # URL输入区域
+
     url_sizer = wx.BoxSizer(wx.HORIZONTAL)
     url_label = wx.StaticText(single_panel, label="下载链接:")
     url_text = wx.TextCtrl(single_panel, style=wx.TE_PROCESS_ENTER)
@@ -667,7 +666,7 @@ def on_new_download(parent, list_ctrl, image_list):
     url_sizer.Add(url_text, 1, wx.ALL, 5)
     single_sizer.Add(url_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 文件名输入区域
+
     filename_sizer = wx.BoxSizer(wx.HORIZONTAL)
     filename_label = wx.StaticText(single_panel, label="文件名:")
     filename_text = wx.TextCtrl(single_panel)
@@ -675,7 +674,7 @@ def on_new_download(parent, list_ctrl, image_list):
     filename_sizer.Add(filename_text, 1, wx.ALL, 5)
     single_sizer.Add(filename_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 保存路径输入区域
+
     path_sizer = wx.BoxSizer(wx.HORIZONTAL)
     path_label = wx.StaticText(single_panel, label="保存路径:")
     path_text = wx.TextCtrl(single_panel, value=default_save_path)
@@ -685,7 +684,7 @@ def on_new_download(parent, list_ctrl, image_list):
     path_sizer.Add(browse_btn, 0, wx.ALL, 5)
     single_sizer.Add(path_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 添加线程数选择区域
+
     thread_sizer = wx.BoxSizer(wx.HORIZONTAL)
     thread_label = wx.StaticText(single_panel, label="线程数 (1-1024):")
     thread_count_spin = wx.SpinCtrl(single_panel, min=1, max=1024, initial=4)
@@ -700,13 +699,13 @@ def on_new_download(parent, list_ctrl, image_list):
     batch_panel = wx.Panel(notebook)
     batch_sizer = wx.BoxSizer(wx.VERTICAL)
     
-    # 导入网址文件区域
+
     import_sizer = wx.BoxSizer(wx.HORIZONTAL)
     import_btn = wx.Button(batch_panel, label="导入网址文件")
     import_sizer.Add(import_btn, 0, wx.ALL, 5)
     batch_sizer.Add(import_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 主网站输入区域
+
     main_site_sizer = wx.BoxSizer(wx.HORIZONTAL)
     main_site_label = wx.StaticText(batch_panel, label="主网站:")
     main_site_text = wx.TextCtrl(batch_panel)
@@ -714,7 +713,7 @@ def on_new_download(parent, list_ctrl, image_list):
     main_site_sizer.Add(main_site_text, 1, wx.ALL, 5)
     batch_sizer.Add(main_site_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 文件夹名称输入区域
+
     folder_sizer = wx.BoxSizer(wx.HORIZONTAL)
     folder_label = wx.StaticText(batch_panel, label="文件夹名称:")
     folder_text = wx.TextCtrl(batch_panel, value=f"批量下载_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
@@ -722,7 +721,7 @@ def on_new_download(parent, list_ctrl, image_list):
     folder_sizer.Add(folder_text, 1, wx.ALL, 5)
     batch_sizer.Add(folder_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 线程数选择区域
+
     batch_thread_sizer = wx.BoxSizer(wx.HORIZONTAL)
     batch_thread_label = wx.StaticText(batch_panel, label="线程数:")
     batch_thread_spin = wx.SpinCtrl(batch_panel, min=1, max=10, initial=4)
@@ -730,13 +729,13 @@ def on_new_download(parent, list_ctrl, image_list):
     batch_thread_sizer.Add(batch_thread_spin, 0, wx.ALL, 5)
     batch_sizer.Add(batch_thread_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
-    # 未下载列表区域
+
     undownloaded_list = wx.ListBox(batch_panel, style=wx.LB_SINGLE)
     batch_sizer.Add(undownloaded_list, 1, wx.ALL | wx.EXPAND, 5)
     
     batch_panel.SetSizer(batch_sizer)
     notebook.AddPage(batch_panel, "批量下载")
-    # 按钮区域（放在选项卡下方）
+
     btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
     ok_btn = wx.Button(panel, wx.ID_OK, label="确定")
     cancel_btn = wx.Button(panel, wx.ID_CANCEL, label="取消")
@@ -747,14 +746,13 @@ def on_new_download(parent, list_ctrl, image_list):
     
     panel.SetSizer(main_sizer)
     
-    # 批量下载相关变量
+
     batch_urls = []
     
-    # 绑定事件
     def on_url_enter(event):
         url = url_text.GetValue().strip()
         if url:
-            # 从URL中提取文件名
+    
             filename = os.path.basename(url) or "download_file"
             filename_text.SetValue(filename)
     
@@ -772,32 +770,32 @@ def on_new_download(parent, list_ctrl, image_list):
             
             path = fileDialog.GetPath()
             try:
-                # 根据文件扩展名判断格式
+
                 if path.lower().endswith('.json'):
                     # JSON格式导入
                     with open(path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         if isinstance(data, list):
                             urls = []
-                            download_items = []  # 存储原始URL和文件名信息
+                            download_items = [] 
                             for item in data:
                                 if isinstance(item, dict) and 'url' in item:
                                     url = item['url'].strip()
                                     if url:
                                         filename = item.get('filename', '')
-                                        # 存储原始URL，不添加备注信息
+                              
                                         urls.append(url)
-                                        # 同时存储下载项目信息
+                                     
                                         download_items.append({"url": url, "filename": filename})
                             wx.MessageBox(f"成功导入 {len(urls)} 个网址", "提示", wx.OK | wx.ICON_INFORMATION)
                             undownloaded_list.Set(urls)
                             batch_urls.extend(urls)
-                            # 将下载项目信息存储到frame中，供后续使用
+                  
                             dlg.download_items = download_items
                         else:
                             wx.MessageBox("JSON格式错误：应为数组格式", "错误", wx.OK | wx.ICON_ERROR)
                 else:
-                    # TXT格式导入（原有逻辑）
+              
                     with open(path, 'r', encoding='utf-8') as f:
                         urls = [line.strip() for line in f if line.strip()]
                         wx.MessageBox(f"成功导入 {len(urls)} 个网址", "提示", wx.OK | wx.ICON_INFORMATION)
@@ -811,17 +809,17 @@ def on_new_download(parent, list_ctrl, image_list):
     browse_btn.Bind(wx.EVT_BUTTON, on_browse_click)
     import_btn.Bind(wx.EVT_BUTTON, on_import_click)
     
-    # 处理URL文本变化，自动提取文件名
+
     def on_url_change(event):
         url = url_text.GetValue().strip()
         if url and not filename_text.GetValue():
-            # 从URL中提取文件名
+     
             filename = os.path.basename(url) or "download_file"
             filename_text.SetValue(filename)
     
     url_text.Bind(wx.EVT_TEXT, on_url_change)
     
-    # 显示对话框
+
     if dlg.ShowModal() == wx.ID_OK:
         current_page = notebook.GetSelection()
         
@@ -832,7 +830,7 @@ def on_new_download(parent, list_ctrl, image_list):
             thread_count = thread_count_spin.GetValue()
             
             if url and filename and save_path:
-                # 检查文件是否已存在
+       
                 file_path = os.path.join(save_path, filename)
                 if os.path.exists(file_path):
                     msg_dlg = wx.MessageDialog(
@@ -847,13 +845,13 @@ def on_new_download(parent, list_ctrl, image_list):
                         return
                     msg_dlg.Destroy()
                 
-                # 初始化记录为"下载中"状态
+     
                 record = add_download_record(url, filename, save_path, "下载中", 0)
                 refresh_download_list(list_ctrl, image_list)
                 
-                # 定义下载完成回调函数
+                # 下载完成回调函数
                 def on_download_completed(success, file_size):
-                    # 直接在download_history中查找并更新记录
+
                     for idx, item in enumerate(download_history):
                         if (item["url"] == url and 
                             item["filename"] == filename and 
@@ -864,13 +862,13 @@ def on_new_download(parent, list_ctrl, image_list):
                                 item["file_size"] = file_size
                             else:
                                 if file_size > 0:
-                                    # 如果有文件大小，可能是部分成功
+                        
                                     item["status"] = "部分完成"
                                     item["file_size"] = file_size
                                 else:
                                     item["status"] = "失败"
                             break
-                    # 无论成功失败都保存历史记录并刷新列表
+    
                     save_download_history()
                     wx.CallAfter(refresh_download_list, list_ctrl, image_list)
                 
@@ -879,7 +877,7 @@ def on_new_download(parent, list_ctrl, image_list):
                         wx.CallAfter(download_window, url, filename, save_path, thread_count=thread_count, disable_ssl=True, 
                                     completion_callback=on_download_completed)
                     except Exception as e:
-                        # 直接在download_history中查找并更新记录
+    
                         for idx, item in enumerate(download_history):
                             if (item["url"] == url and 
                                 item["filename"] == filename and 
@@ -909,12 +907,12 @@ def on_new_download(parent, list_ctrl, image_list):
                 dlg.Destroy()
                 return
             
-            # 先保存对话框的父窗口引用，然后销毁对话框
+
             parent_window = parent
             if hasattr(dlg, 'download_items') and dlg.download_items:
                 parent_window.download_items = dlg.download_items
             dlg.Destroy()        
-            # 调用DatchDownload中的批量下载功能
+           
             try:
                 import DatchDownload
                 DatchDownload.create_download_window(
@@ -924,12 +922,12 @@ def on_new_download(parent, list_ctrl, image_list):
                     main_site, 
                     default_save_path,
                     folder_name,
-                    list_ctrl,  # 恢复传递list_ctrl参数
-                    image_list  # 恢复传递image_list参数
+                    list_ctrl,  
+                    image_list 
                 )
             except Exception as e:
                 wx.MessageBox(f"启动批量下载失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
-            return  # 提前返回，避免执行下面的dlg.Destroy() # 提前返回，避免执行下面的dlg.Destroy()
+            return  
     dlg.Destroy()
 def on_delete_download(list_ctrl):
     selected_count = list_ctrl.GetSelectedItemCount()
@@ -978,31 +976,31 @@ def on_delete_download(list_ctrl):
         global download_history
         delete_files = delete_files_checkbox.GetValue()
         
-        # 获取所有选中项的索引
+
         selected_indices = []
         item = list_ctrl.GetFirstSelected()
         while item != -1:
             selected_indices.append(item)
             item = list_ctrl.GetNextSelected(item)
         
-        # 从大索引到小索引删除，避免索引偏移
+   
         selected_indices.sort(reverse=True)
         
         for index in selected_indices:
             if 0 <= index < len(download_history):
                 record = download_history[index]
                 
-                # 如果勾选了"一并删除文件"，则删除对应的文件
+             
                 if delete_files:
                     file_path = os.path.join(record["save_path"], record["filename"])
                     try:
                         if os.path.exists(file_path):
-                            # 检查是否是批量下载文件夹记录
+                     
                             if record.get("url") == "批量下载文件夹":
-                                # 批量下载文件夹记录，删除整个文件夹
+                             
                                 import shutil
                                 shutil.rmtree(file_path)
-                                # 同时删除文件夹内的所有文件
+                            
                                 if os.path.exists(file_path) and os.path.isdir(file_path):
                                     for root, dirs, files in os.walk(file_path, topdown=False):
                                         for name in files:
@@ -1011,7 +1009,7 @@ def on_delete_download(list_ctrl):
                                             os.rmdir(os.path.join(root, name))
                                     os.rmdir(file_path)
                             else:
-                                # 普通文件或文件夹
+                           
                                 if os.path.isfile(file_path):
                                     os.remove(file_path)
                                 elif os.path.isdir(file_path):
@@ -1023,7 +1021,7 @@ def on_delete_download(list_ctrl):
                 download_history.pop(index)
         
         save_download_history()
-        # 删除后自动刷新列表
+   
         wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
     dlg.Destroy()
 
@@ -1032,18 +1030,18 @@ def on_clear_history(list_ctrl):
     dlg = wx.Dialog(list_ctrl.GetParent(), title="确认清空历史记录", size=(400, 180))
     panel = wx.Panel(dlg)
     
-    # 创建布局
+
     sizer = wx.BoxSizer(wx.VERTICAL)
     
-    # 添加提示文本
+
     text = wx.StaticText(panel, label="确定要清空所有下载历史记录吗？")
     sizer.Add(text, 0, wx.ALL | wx.CENTER, 10)
     
-    # 添加"一并删除文件"勾选框
+   
     delete_files_checkbox = wx.CheckBox(panel, label="一并删除文件")
     sizer.Add(delete_files_checkbox, 0, wx.ALL | wx.LEFT, 20)
     
-    # 创建按钮布局
+
     btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
     yes_btn = wx.Button(panel, label="确定")
     no_btn = wx.Button(panel, label="取消")
@@ -1067,21 +1065,21 @@ def on_clear_history(list_ctrl):
         global download_history
         delete_files = delete_files_checkbox.GetValue()
         
-        # 如果勾选了"一并删除文件"，则删除所有对应的文件
+
         if delete_files:
             for record in download_history:
                 file_path = os.path.join(record["save_path"], record["filename"])
                 try:
                     if os.path.exists(file_path):
-                        # 检查是否是批量下载文件夹记录
+                 
                         if record.get("url") == "批量下载文件夹":
-                            # 批量下载文件夹记录，删除整个文件夹
+                          
                             import shutil
                             try:
-                                # 首先尝试使用shutil.rmtree删除整个文件夹
+                              
                                 shutil.rmtree(file_path)
                             except Exception as e:
-                                # 如果shutil.rmtree失败，尝试手动删除文件和子文件夹
+                     
                                 if os.path.exists(file_path) and os.path.isdir(file_path):
                                     try:
                                         for root, dirs, files in os.walk(file_path, topdown=False):
@@ -1100,7 +1098,7 @@ def on_clear_history(list_ctrl):
                                     except:
                                         pass
                         else:
-                            # 普通文件或文件夹
+                        
                             if os.path.isfile(file_path):
                                 os.remove(file_path)
                             elif os.path.isdir(file_path):
@@ -1111,7 +1109,7 @@ def on_clear_history(list_ctrl):
         
         download_history.clear()
         save_download_history()
-        # 清空后自动刷新列表
+
         wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
     
     dlg.Destroy()
@@ -1123,9 +1121,9 @@ def on_item_activated(list_ctrl, event):
         record = download_history[selected]
         file_path = os.path.join(record["save_path"], record["filename"])
         
-        # 检查是否是文件夹记录（批量下载文件夹）
+
         if record.get("url") == "批量下载文件夹":
-            # 这是文件夹记录，打开文件夹
+
             folder_path = os.path.join(record["save_path"], record["filename"])
             if os.path.exists(folder_path) and os.path.isdir(folder_path):
                 try:
@@ -1147,7 +1145,7 @@ def on_menu_export(event, list_ctrl):
     if selected_count == 0:
         return
     
-    # 打开文件保存对话框
+
     dlg = wx.FileDialog(
         None,
         "导出选中项",
@@ -1159,13 +1157,13 @@ def on_menu_export(event, list_ctrl):
         export_path = dlg.GetPath()
         
         try:
-            # 收集选中项的数据
+
             selected_data = []
             item = list_ctrl.GetFirstSelected()
             while item != -1:
                 if 0 <= item < len(download_history):
                     record = download_history[item]
-                    # 只保存URL和文件名
+ 
                     simplified_record = {
                         "url": record["url"],
                         "filename": record["filename"]
@@ -1173,7 +1171,7 @@ def on_menu_export(event, list_ctrl):
                     selected_data.append(simplified_record)
                 item = list_ctrl.GetNextSelected(item)
             
-            # 保存为JSON文件
+      
             with open(export_path, 'w', encoding='utf-8') as f:
                 json.dump(selected_data, f, ensure_ascii=False, indent=2)
             
@@ -1223,18 +1221,18 @@ def on_menu_redownload(event, list_ctrl):
         filename = record["filename"]
         save_path = record["save_path"]
         
-        # 检查是否是批量下载文件夹记录
+
         if record.get("url") == "批量下载文件夹":
-            # 批量下载文件夹重新下载逻辑
+
             if record.get("download_items"):
-                # 重新启动批量下载
+
                 try:
                     import DatchDownload
-                    # 获取下载项目列表
+ 
                     download_items = record.get("download_items", [])
                     urls = [item["url"] for item in download_items]
                     
-                    # 调用批量下载功能
+
                     DatchDownload.create_download_window(
                         None,  # parent_window
                         urls, 
@@ -1250,7 +1248,7 @@ def on_menu_redownload(event, list_ctrl):
             else:
                 wx.MessageBox("批量下载文件夹记录缺少下载项目信息", "错误", wx.OK | wx.ICON_ERROR)
         else:
-            # 普通单文件重新下载
+
             wx.CallAfter(download_window, url, filename, save_path, True, thread_count=16, disable_ssl=True)
 
 def on_menu_copy_url(event, list_ctrl):
@@ -1308,19 +1306,19 @@ def show_download_manager():
 
 def DownloadUI(parent=None):
   
-    # 创建独立窗口
+
     app = wx.App(False)
     frame = wx.Frame(None, title="下载管理器", size=(800, 600))
     download_panel = create_download_panel(wx.Panel(frame))
     
-    # 设置布局
+
     sizer = wx.BoxSizer(wx.VERTICAL)
     sizer.Add(download_panel, 1, wx.EXPAND)
     frame.SetSizer(sizer)
     
     frame.Center()
     frame.Show()
-    app.MainLoop()  # 正确位置启动事件循环
+    app.MainLoop()  
 
 if __name__ == "__main__":
  

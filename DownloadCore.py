@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx
 import threading
 import requests
@@ -345,14 +348,14 @@ class DownloadFrame(wx.Frame):
             elif not self.stop_event.is_set():
                 self.update_status("下载未完成，部分分块失败")
                 self.log_message("警告: 部分分块下载失败，请检查网络连接并重试")
-                # 添加部分失败时的回调
+            
                 if self.completion_callback:
                     wx.CallAfter(self.completion_callback, False, 0)
         except Exception as e:
             if not self.stop_event.is_set():
                 self.update_status(f"下载出错: {str(e)}")
                 self.log_message(f"错误: {str(e)}")
-                # 添加异常时的回调
+     
                 if self.completion_callback:
                     wx.CallAfter(self.completion_callback, False, 0)
     
@@ -380,7 +383,7 @@ class DownloadFrame(wx.Frame):
             final_file_path = os.path.join(self.save_path, self.filename)
             if os.path.exists(final_file_path):
                 file_size = os.path.getsize(final_file_path)
-                # 如果文件存在且大小合理，标记为部分完成
+            
                 wx.CallAfter(self.completion_callback, False, file_size)
             else:
                 wx.CallAfter(self.completion_callback, False, 0)

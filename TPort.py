@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import http.server
 import socketserver
 import os
@@ -24,17 +27,17 @@ def start_file_server(port, file_path, directory=None, log_callback=None):
     class FileHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/':
-                # 确保文件路径以/开头
+            
                 self.path = '/' + os.path.basename(file_path)
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
         
         def send_head(self):
-            # 重写send_head方法，处理非ASCII字符
+          
             path = self.translate_path(self.path)
             try:
                 return super().send_head()
             except UnicodeEncodeError:
-                # 如果遇到编码错误，将路径转换为ASCII
+              
                 path = path.encode('ascii', 'ignore').decode('ascii')
                 self.path = path
                 return super().send_head()
@@ -44,7 +47,7 @@ def start_file_server(port, file_path, directory=None, log_callback=None):
             return file_path
         
         def log_message(self, format, *args):
-            # 重写log_message方法，将日志信息传递给log_callback
+
             if log_callback:
                 message = "%s - - [%s] %s\n" % (self.address_string(),
                                             self.log_date_time_string(),
@@ -94,7 +97,7 @@ def create_gui():
     stop_button = wx.Button(panel, label="停止", pos=(100, 230), size=(80, -1))
     stop_button.Disable()
     
-    # 事件处理
+
     def on_browse(event):
         dlg = wx.FileDialog(frame, "选择要共享的文件", wildcard="All files (*.*)|*.*")
         if dlg.ShowModal() == wx.ID_OK:
@@ -125,7 +128,7 @@ def create_gui():
         start_button.Enable()
         stop_button.Disable()
     
-    # 绑定事件
+    
     browse_button.Bind(wx.EVT_BUTTON, on_browse)
     start_button.Bind(wx.EVT_BUTTON, on_start)
     stop_button.Bind(wx.EVT_BUTTON, on_stop)

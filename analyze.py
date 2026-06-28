@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import wx,requests
 from bs4 import BeautifulSoup
 import time
@@ -101,7 +104,7 @@ def on_analyze_button(url_l,headers=None,timeout=5,code=True):
     info_text.SetValue(f"网页标题: {result['title']}\n\n"
                       f"链接数量: {len(result['links'])}\n"
                       f"图片数量: {len(result['images'])}\n"
-                      f"分析用时: {result['elapsed_time']:.2f}秒\n"  # 新增用时显示
+                      f"分析用时: {result['elapsed_time']:.2f}秒\n" 
                       f"请求头User-Agent：{headers}")
     
     links_text = create_scrollable_text(links_panel)

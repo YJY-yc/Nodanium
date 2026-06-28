@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026 YUJY(YJY-yc)
+# This file is licensed under the MIT License.
+# SPDX-License-Identifier: MIT
 import os
 import wx
 import time
