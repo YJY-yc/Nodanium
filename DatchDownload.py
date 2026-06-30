@@ -545,7 +545,7 @@ def download_file(url, download_dir, add_single_record=True, filename=""):
         return False
 def show_download_complete_notification(local_path):
     toast = Notification(
-        app_id="Advanced Network Toolset",
+        app_id="Nodanium",
         title="下载完成",
         msg=f"文件已保存到：{local_path}",
         duration="long"

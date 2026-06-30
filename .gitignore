@@ -1,2 +1,5 @@
 Pack.bat
 Tests/
+wx_env/
+downloads/
+.vscode/

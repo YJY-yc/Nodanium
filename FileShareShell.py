@@ -144,27 +144,7 @@ def MainPanel(parent):
         for ip in ip_addresses:
             wx.CallAfter(log_text.AppendText, f"{ip}:{port}\n")
         
-        # 保存到历史记录
-        history_path = os.path.join(target_folder, "history.json")
-        history = []
-        if os.path.exists(history_path):
-            try:
-                with open(history_path, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except:
-                pass
-        
-        history.append({
-            "url": f"{ip_addresses[0]}:{port}", 
-            "filename": os.path.basename(file_path),
-            "time": time.strftime("%Y-%m-%d %H:%M:%S")
-        })
-        
-        try:
-            with open(history_path, 'w', encoding='utf-8') as f:
-                json.dump(history, f, ensure_ascii=False, indent=4)
-        except:
-            pass
+
         
         start_button.Disable()
         stop_button.Enable()
