@@ -1,0 +1,9 @@
+{
+  "name": "com.nodanium.downloader",
+  "description": "Nodanium 下载器 Native Host",
+  "path": "Nodanium.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://jhmkpdbekfohdhgkaldkklhmdidelkdk/"
+  ]
+}

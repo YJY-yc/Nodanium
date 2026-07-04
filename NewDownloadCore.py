@@ -235,24 +235,21 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
             continue
         if task.task_buffer is None:
             task.task_buffer = BytesIO()
-        current_offset = task.start_byte + task.downloaded
-        retry_times = 0
-        chunk_finish_flag = False
+        if task.chunk_lock is None:
+            task.chunk_lock = threading.Lock()
+        
         total_chunk_len = task.end_byte - task.start_byte + 1
-
-        while retry_times < DEFAULT_RETRY and not ctx.stop_event.is_set() and not chunk_finish_flag:
+        current_offset = task.start_byte + task.downloaded
+        chunk_finish_flag = False
+        
+        while current_offset <= task.end_byte and not ctx.stop_event.is_set():
             try:
                 range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
                 req_headers = {**ctx.headers, **range_header}
-                resp = session.get(
-                    ctx.url,
-                    headers=req_headers,
-                    stream=True,
-                    timeout=(DEFAULT_TIMEOUT, DEFAULT_TIMEOUT),
-                    verify=not ctx.disable_ssl
-                )
+                resp = session.get(ctx.url, headers=req_headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=(not ctx.disable_ssl))
                 resp.raise_for_status()
-                for raw_data in resp.iter_content(chunk_size=65536):
+                
+                for raw_data in resp.iter_content(chunk_size=8192):
                     if ctx.stop_event.is_set():
                         flush_single_chunk_buffer(ctx, task)
                         break
@@ -261,10 +258,14 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                     task.task_buffer.write(raw_data)
                     data_len = len(raw_data)
                     task.downloaded += data_len
+                    
+                    # 关键修复：实时更新 total_downloaded
+                    with ctx.global_lock:
+                        ctx.total_downloaded += data_len
+                    
                     if task.task_buffer.getbuffer().nbytes >= max_cache_bytes:
                         flush_single_chunk_buffer(ctx, task)
-                        with ctx.global_lock:
-                            ctx.total_downloaded += data_len
+                    
                     pct = min(int((task.downloaded / total_chunk_len) * 100), 100)
                     ui_push_chunk_progress(ctx, task.chunk_idx, task.downloaded, total_chunk_len)
                     current_offset = task.start_byte + task.downloaded
@@ -276,15 +277,18 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                 err_msg = f"分片{task.chunk_idx}异常 重试{retry_times}/{DEFAULT_RETRY}: {str(e)}"
                 ui_push_log(ctx, err_msg)
                 time.sleep(2)
-        write_len = flush_single_chunk_buffer(ctx, task)
-        with ctx.global_lock:
-            ctx.total_downloaded += write_len
+        
+        # 移除重复的 total_downloaded 更新
+        flush_single_chunk_buffer(ctx, task)
+        
         if task.downloaded >= total_chunk_len:
             with ctx.global_lock:
                 task.finished = True
-            ui_push_log(ctx, f"分片{task.chunk_idx}数据全部落盘，下载完成")
+            ui_push_log(ctx, f"分片{task.chunk_idx}数据下载完成")
             dump_progress_json(ctx)
+        
         ctx.task_queue.task_done()
+    
     session.close()
 
 # -------------------------- UI异步推送纯函数 --------------------------
@@ -307,36 +311,51 @@ def ui_push_chunk_progress(ctx: DownloadCtx, chunk_idx: int, downloaded: int, ch
 def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     if ctx.stop_event.is_set() or ctx.ui_frame is None or ctx.file_total_size == 0:
         return
+    
     now_ts = time.time()
     delta_ts = now_ts - ctx.last_speed_calc_ts
+    
     if delta_ts < 0.5:
         return
+    
     with ctx.global_lock:
         delta_bytes = ctx.total_downloaded - ctx.last_total_bytes
         ctx.last_total_bytes = ctx.total_downloaded
         ctx.last_speed_calc_ts = now_ts
+    
+    # 计算速度（现在是实时速度）
     speed_bps = delta_bytes / delta_ts
+    
+    # 格式化速度字符串
     if speed_bps < 1024:
         speed_str = f"{speed_bps:.2f} B/s"
     elif speed_bps < 1024 ** 2:
         speed_str = f"{speed_bps / 1024:.2f} KB/s"
     else:
         speed_str = f"{speed_bps / (1024**2):.2f} MB/s"
-    global_pct = int((ctx.total_downloaded / ctx.file_total_size) * 100)
+    
+    # 计算已耗时
     elapsed_sec = now_ts - ctx.start_ts
     h, rem = divmod(elapsed_sec, 3600)
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+    
+    # 计算剩余时间
     if speed_bps > 0:
         remain_bytes = ctx.file_total_size - ctx.total_downloaded
         remain_sec = remain_bytes / speed_bps
+        
+        # 确保剩余时间不为负数
+        remain_sec = max(0, remain_sec)
+        
         rh, rrem = divmod(remain_sec, 3600)
         rm, rs = divmod(rrem, 60)
         remain_str = f"{int(rh):02d}:{int(rm):02d}:{int(rs):02d}"
     else:
         remain_str = "计算中"
+    
+    global_pct = int((ctx.total_downloaded / ctx.file_total_size) * 100)
     wx.CallAfter(ctx.ui_frame.refresh_speed_info, speed_str, time_str, remain_str, global_pct)
-
 # -------------------------- 顶层调度核心函数 --------------------------
 def schedule_download_task(ctx: DownloadCtx) -> None:
     ctx.start_ts = time.time()
@@ -360,7 +379,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         if ctx.completion_callback:
             wx.CallAfter(ctx.completion_callback, False, 0)
         return
-    ui_push_global_status(ctx, f"已预分配文件，总大小：{ctx.file_total_size / 1024 / 1024:.2f}MB")
+    ui_push_global_status(ctx, f"{ctx.file_total_size / 1024 / 1024:.2f}MB")
     worker_threads = []
     for _ in range(ctx.jobs):
         t = threading.Thread(target=single_chunk_worker, args=(ctx,), daemon=True)
@@ -409,12 +428,29 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             ui_push_log(ctx, "10秒后执行关机，可关闭窗口取消")
             time.sleep(10)
             os.system("shutdown /s /t 0")
+        
+        # 收集下载结果信息
+        download_result = {
+            'success': True,
+            'file_size': final_file_size,
+            'save_path': ctx.save_path,
+            'filename': ctx.filename,
+            'time_cost': time_str,
+            'threads': ctx.jobs
+        }
+        
         if ctx.completion_callback:
-            wx.CallAfter(ctx.completion_callback, True, final_file_size)
-        def show_complete_dialog():
+            wx.CallAfter(ctx.completion_callback, True, final_file_size, download_result)
+        
+        def show_complete_dialog_and_close():
             dlg = DownloadCompleteDialog(ctx.ui_frame, ctx, final_file_size, time_str)
             dlg.ShowModal()
-        wx.CallAfter(show_complete_dialog)
+            dlg.Destroy()
+            # 关闭下载窗口
+            if ctx.ui_frame:
+                ctx.ui_frame.Close()
+        
+        wx.CallAfter(show_complete_dialog_and_close)
     elif not ctx.stop_event.is_set():
         if not file_complete or not binary_valid:
             ui_push_global_status(ctx, "警告：分片显示完成，但磁盘文件数据缺失/损坏！")
@@ -488,77 +524,75 @@ def init_download_context(
 
 # -------------------------- 下载完成弹窗UI --------------------------
 class DownloadCompleteDialog(wx.Dialog):
-    def __init__(self, parent, ctx: DownloadCtx, total_bytes: int, cost_time: str):
-        super().__init__(parent, title="下载完成", size=(520, 260))
-        self.ctx = ctx
-        self.total_bytes = total_bytes
-        self.cost_time = cost_time
-        self.target_file = os.path.join(ctx.save_path, ctx.filename)
-        panel = wx.Panel(self)
-        vbox = wx.BoxSizer(wx.VERTICAL)
-        title = wx.StaticText(panel, label=f"文件 {ctx.filename} 下载完成！")
-        title.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        vbox.Add(title, flag=wx.ALL | wx.ALIGN_CENTER, border=10)
-        size_mb = total_bytes / 1024 / 1024
-        info_text = wx.StaticText(panel, label=f"文件大小：{size_mb:.2f} MB\n总耗时：{cost_time}")
-        vbox.Add(info_text, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
-        btn_box = wx.BoxSizer(wx.HORIZONTAL)
-        btn_open_file = wx.Button(panel, label="打开文件")
-        btn_open_dir = wx.Button(panel, label="打开保存目录")
-        btn_export = wx.Button(panel, label="导出.ndf")
-        btn_close = wx.Button(panel, label="关闭")
-        btn_open_file.Bind(wx.EVT_BUTTON, self.on_open_file)
-        btn_open_dir.Bind(wx.EVT_BUTTON, self.on_open_folder)
-        btn_export.Bind(wx.EVT_BUTTON, self.on_export_ndf)
-        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_OK))
-        btn_box.Add(btn_open_file, proportion=0, flag=wx.RIGHT, border=6)
-        btn_box.Add(btn_open_dir, proportion=0, flag=wx.RIGHT, border=6)
-        btn_box.Add(btn_export, proportion=0, flag=wx.RIGHT, border=6)
-        btn_box.Add(btn_close, proportion=0)
-        vbox.Add(btn_box, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=10)
-        panel.SetSizer(vbox)
-        self.Centre()
-    def on_open_file(self, evt):
-        if os.path.exists(self.target_file):
-            os.startfile(self.target_file)
-        else:
-            wx.MessageBox("文件不存在", "提示", wx.OK)
-    def on_open_folder(self, evt):
-        os.startfile(self.ctx.save_path)
-    def on_export_ndf(self, evt):
-        dlg = wx.DirDialog(self, "选择.ndf导出目录", self.ctx.save_path)
-        if dlg.ShowModal() == wx.ID_OK:
-            path = export_ndf(self.ctx, dlg.GetPath())
-            wx.MessageBox(f"导出成功：{path}", "导出完成", wx.OK)
-        dlg.Destroy()
-
-# -------------------------- 下载主窗口UI（无业务逻辑，仅渲染） --------------------------
-class DownloadFrame(wx.Frame):
     def __init__(self, ctx: DownloadCtx):
-        super().__init__(None, title=f"多协程下载器 - {ctx.filename}", size=(780, 680))
+        super().__init__(None, title=f"下载 - {ctx.filename}", size=(500, 400))
+        
+        # 启用窗口级别双缓冲
+        self.SetDoubleBuffered(True)
+        
         self.ctx = ctx
         self.ctx.ui_frame = self
         self.grid_cell_pct: List[int] = [0] * len(ctx.chunk_task_list)
         self.panel = wx.Panel(self)
+        self.panel.SetDoubleBuffered(True)
         self.offscreen_bmp: Optional[wx.Bitmap] = None
         self.grid_col_count = 1
         self.cell_w = GRID_CELL_SIZE
         self.cell_h = GRID_CELL_SIZE
         self.grid_w = 0
         self.grid_h = 0
+        self.updating_grid = False
+        self.refresh_pending = False
+        self.last_refresh_time = 0
+        self.is_painting = False
+        self.is_layouting = False  # 添加：防止布局递归
+        self.is_refreshing = False  # 添加：防止刷新递归
+        
+        # 添加窗口大小变化事件绑定
+        self.Bind(wx.EVT_SIZE, self.on_window_size)
+        
         self.create_ui_layout()
         self.Bind(wx.EVT_CLOSE, self.on_window_close)
         self.start_schedule_thread()
         self.Centre()
         self.Show()
+# -------------------------- 下载主窗口UI（无业务逻辑，仅渲染） --------------------------
+class DownloadFrame(wx.Frame):
+    def __init__(self, ctx: DownloadCtx):
+        super().__init__(None, title=f"下载 - {ctx.filename}", size=(500, 400))
+        
+        # 启用窗口级别双缓冲
+        self.SetDoubleBuffered(True)
+        
+        self.ctx = ctx
+        self.ctx.ui_frame = self
+        self.grid_cell_pct: List[int] = [0] * len(ctx.chunk_task_list)
+        self.panel = wx.Panel(self)
+        self.panel.SetDoubleBuffered(True)
+        self.cell_w = GRID_CELL_SIZE
+        self.cell_h = GRID_CELL_SIZE
+        
+        # 添加窗口大小变化事件绑定
+        self.Bind(wx.EVT_SIZE, self.on_window_size)
+        
+        self.create_ui_layout()
+        self.Bind(wx.EVT_CLOSE, self.on_window_close)
+        self.start_schedule_thread()
+        self.Centre()
+        self.Show()
+    
     def create_ui_layout(self):
         main_vbox = wx.BoxSizer(wx.VERTICAL)
+        
+        # 顶部进度条和状态
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         self.global_gauge = wx.Gauge(self.panel, range=100, size=(-1, 22))
         top_box.Add(self.global_gauge, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=10)
         self.status_label = wx.StaticText(self.panel, label="准备初始化下载...")
         top_box.Add(self.status_label, proportion=0)
         main_vbox.Add(top_box, flag=wx.EXPAND | wx.ALL, border=8)
+        
+        # 速度信息
         speed_box = wx.BoxSizer(wx.HORIZONTAL)
         self.speed_text = wx.StaticText(self.panel, label="总速度: 0 B/s")
         self.elapsed_text = wx.StaticText(self.panel, label="已耗时: 00:00:00")
@@ -567,17 +601,31 @@ class DownloadFrame(wx.Frame):
         speed_box.Add(self.elapsed_text, flag=wx.RIGHT, border=15)
         speed_box.Add(self.remain_text)
         main_vbox.Add(speed_box, flag=wx.LEFT | wx.BOTTOM, border=8)
-        self.grid_scroll = wx.ScrolledWindow(self.panel)
+        
+        # 网格区域
+        self.grid_scroll = wx.ScrolledWindow(self.panel, style=wx.VSCROLL | wx.HSCROLL)
+        self.grid_scroll.SetDoubleBuffered(True)
         self.grid_scroll.SetScrollRate(GRID_CELL_SIZE, GRID_CELL_SIZE)
-        grid_inner_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.grid_canvas = wx.Panel(self.grid_scroll, size=(720, 220))
-        self.grid_canvas.Bind(wx.EVT_PAINT, self.on_grid_paint)
-        self.grid_canvas.Bind(wx.EVT_SIZE, lambda e: setattr(self, "offscreen_bmp", None))
-        grid_inner_sizer.Add(self.grid_canvas, proportion=1, flag=wx.EXPAND)
-        self.grid_scroll.SetSizer(grid_inner_sizer)
+        self.grid_scroll.SetBackgroundColour(wx.WHITE)
+        
+        self.grid_panel = wx.Panel(self.grid_scroll)
+        self.grid_panel.SetDoubleBuffered(True)
+        self.grid_panel.SetBackgroundColour(wx.WHITE)
+        self.grid_panel.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.grid_panel.Bind(wx.EVT_PAINT, self.on_grid_paint)
+        
+        grid_sizer = wx.BoxSizer(wx.VERTICAL)
+        grid_sizer.Add(self.grid_panel, proportion=1, flag=wx.EXPAND)
+        self.grid_scroll.SetSizer(grid_sizer)
+        
         main_vbox.Add(self.grid_scroll, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
+        
+        # 日志窗口
         self.log_ctrl = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 120))
+        self.log_ctrl.SetDoubleBuffered(True)
         main_vbox.Add(self.log_ctrl, proportion=0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        
+        # 按钮
         btn_box = wx.BoxSizer(wx.HORIZONTAL)
         self.btn_pause = wx.Button(self.panel, label="暂停/终止")
         self.btn_export = wx.Button(self.panel, label="导出.ndf")
@@ -585,82 +633,148 @@ class DownloadFrame(wx.Frame):
         btn_box.Add(self.btn_pause, flag=wx.RIGHT, border=10)
         btn_box.Add(self.btn_export)
         main_vbox.Add(btn_box, flag=wx.ALL | wx.ALIGN_CENTER, border=8)
+        
         self.panel.SetSizer(main_vbox)
-    def start_schedule_thread(self):
-        schedule_t = threading.Thread(target=schedule_download_task, args=(self.ctx,), daemon=True)
-        schedule_t.start()
-    def set_status_text(self, msg: str):
-        self.status_label.SetLabel(msg)
-        self.panel.Layout()
+    
     def append_log(self, msg: str):
-        self.log_ctrl.AppendText(f"{time.strftime('%H:%M:%S')} | {msg}\n")
-    def update_grid_cell(self, chunk_idx: int, pct: int):
-        if chunk_idx >= len(self.grid_cell_pct):
-            return
-        old_val = self.grid_cell_pct[chunk_idx]
-        if old_val == pct:
-            return
-        self.grid_cell_pct[chunk_idx] = pct
-        col_cnt = max(1, self.grid_col_count)
-        col = chunk_idx % col_cnt
-        row = chunk_idx // col_cnt
-        x = col * self.cell_w
-        y = row * self.cell_h
-        rect = wx.Rect(x, y, self.cell_w, self.cell_h)
-        self.grid_canvas.RefreshRect(rect)
+        """添加日志（与 ui_push_log 函数配合使用）"""
+        self.add_log(msg)
+
+    def set_status_text(self, msg: str):
+        """设置状态文本"""
+        self.status_label.SetLabel(msg)
+
     def on_grid_paint(self, event):
-        dc = wx.PaintDC(self.grid_canvas)
-        client_w, client_h = self.grid_canvas.GetClientSize()
-        self.grid_col_count = max(1, client_w // self.cell_w)
-        total_cols = self.grid_col_count
+        """绘制网格 - 自适应窗口大小"""
+        dc = wx.AutoBufferedPaintDC(self.grid_panel)
+        
+        # 获取滚动窗口的客户区大小
+        scroll_w, scroll_h = self.grid_scroll.GetClientSize()
+        
+        if scroll_w == 0 or scroll_h == 0:
+            return
+        
+        # 获取面板当前尺寸
+        panel_w, panel_h = self.grid_panel.GetClientSize()
+        
+        # 计算网格参数（使用滚动窗口尺寸）
+        total_cols = max(1, scroll_w // self.cell_w)
         total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-        self.grid_w = total_cols * self.cell_w
-        self.grid_h = total_rows * self.cell_h
-        if self.offscreen_bmp is None or self.offscreen_bmp.GetWidth() != self.grid_w or self.offscreen_bmp.GetHeight() != self.grid_h:
-            self.offscreen_bmp = wx.Bitmap(self.grid_w, self.grid_h)
-        mem_dc = wx.MemoryDC(self.offscreen_bmp)
-        mem_dc.SetBackground(wx.WHITE_BRUSH)
-        mem_dc.Clear()
-        mem_dc.SetPen(wx.GREY_PEN)
+        grid_w = total_cols * self.cell_w
+        grid_h = total_rows * self.cell_h
+        
+        # 更新滚动区域尺寸（支持拉伸和压缩）
+        self.grid_scroll.SetVirtualSize((grid_w, grid_h))
+        
+        # 设置面板最小尺寸
+        self.grid_panel.SetMinSize((grid_w, max(grid_h, scroll_h)))
+        
+        # 更新布局
+        self.grid_scroll.Layout()
+        
+        # 用白色填充整个面板
+        dc.SetBrush(wx.WHITE_BRUSH)
+        dc.SetPen(wx.WHITE_PEN)
+        dc.DrawRectangle(0, 0, panel_w, panel_h)
+        
+        # 绘制网格
+        dc.SetPen(wx.GREY_PEN)
         for idx, pct in enumerate(self.grid_cell_pct):
             row = idx // total_cols
             col = idx % total_cols
             x = col * self.cell_w
             y = row * self.cell_h
-            if pct >= 100:
-                mem_dc.SetBrush(wx.GREEN_BRUSH)
-            else:
-                mem_dc.SetBrush(wx.LIGHT_GREY_BRUSH)
-            mem_dc.DrawRectangle(x, y, self.cell_w - 1, self.cell_h - 1)
-        dc.Blit(0, 0, self.grid_w, self.grid_h, mem_dc, 0, 0)
-        mem_dc.SelectObject(wx.NullBitmap)
+            
+            # 只绘制可见区域内的方格
+            if y < panel_h and x < panel_w:
+                if pct >= 100:
+                    dc.SetBrush(wx.GREEN_BRUSH)
+                else:
+                    dc.SetBrush(wx.LIGHT_GREY_BRUSH)
+                
+                dc.DrawRectangle(x, y, self.cell_w - 1, self.cell_h - 1)
+    
+    def on_window_size(self, event):
+        """窗口大小变化时刷新网格"""
+        if hasattr(self, 'grid_panel') and hasattr(self, 'grid_scroll'):
+            # 立即刷新网格面板
+            self.grid_panel.Refresh()
+        
+        event.Skip()
+    
+    def update_grid_cell(self, chunk_idx: int, pct: int):
+        """更新单个网格单元"""
+        if chunk_idx >= len(self.grid_cell_pct):
+            return
+        
+        old_val = self.grid_cell_pct[chunk_idx]
+        if old_val == pct:
+            return
+        
+        self.grid_cell_pct[chunk_idx] = pct
+        
+        if hasattr(self, 'grid_panel'):
+            self.grid_panel.Refresh()
+    
     def refresh_speed_info(self, speed_str: str, elapsed: str, remain: str, global_pct: int):
+        """刷新速度信息"""
+        self.panel.Freeze()
         self.speed_text.SetLabel(f"总速度: {speed_str}")
         self.elapsed_text.SetLabel(f"已耗时: {elapsed}")
         self.remain_text.SetLabel(f"预计剩余: {remain}")
         self.global_gauge.SetValue(global_pct)
-        self.panel.Layout()
+        self.panel.Thaw()
+    
+    def add_log(self, text: str):
+        """添加日志"""
+        current_time = time.strftime("%H:%M:%S", time.localtime())
+        self.log_ctrl.AppendText(f"[{current_time}] {text}\n")
+        self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
+    
     def on_export_ndf_click(self, event):
-        dlg = wx.DirDialog(self, "选择.ndf导出目录", self.ctx.save_path, wx.DD_DEFAULT_STYLE)
-        if dlg.ShowModal() == wx.ID_OK:
-            export_dir = dlg.GetPath()
-            ndf_path = export_ndf(self.ctx, export_dir)
-            self.append_log(f"已导出断点压缩包：{ndf_path}")
-        dlg.Destroy()
+        """导出.ndf文件"""
+        try:
+            # 弹出对话框让用户选择保存路径
+            with wx.DirDialog(self, "选择导出目录", style=wx.DD_DEFAULT_STYLE) as dlg:
+                if dlg.ShowModal() == wx.ID_OK:
+                    export_save_path = dlg.GetPath()
+                    
+                    # 调用导出函数（现在传递两个参数）
+                    export_path = export_ndf(self.ctx, export_save_path)
+                    
+                    if export_path:
+                        wx.MessageBox(f"导出成功！\n文件路径: {export_path}", "导出成功", wx.OK)
+                    else:
+                        wx.MessageBox("导出失败", "错误", wx.OK | wx.ICON_ERROR)
+        except Exception as e:
+            wx.MessageBox(f"导出失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+
     def on_window_close(self, event):
-        self.ctx.stop_event.set()
-        self.append_log("窗口关闭信号触发，正在终止所有下载线程...")
-        with self.ctx.global_lock:
-            for task in self.ctx.chunk_task_list:
-                flush_single_chunk_buffer(self.ctx, task)
-        time.sleep(0.6)
-        if self.ctx.file_obj is not None:
-            self.ctx.file_obj.flush()
-            os.fsync(self.ctx.file_obj.fileno())
-            self.ctx.file_obj.close()
-            self.ctx.file_obj = None
+        """窗口关闭处理"""
+        # 设置停止事件，通知下载线程停止
+        if self.ctx.stop_event:
+            self.ctx.stop_event.set()
+        
+        # 等待线程结束（可选，根据需要）
+        # time.sleep(0.5)
+        
+        # 调用完成回调（如果有）
+        if self.ctx.completion_callback:
+            try:
+                self.ctx.completion_callback(success=False, size=0)
+            except Exception:
+                pass
+        
+        # 关闭窗口
         self.Destroy()
 
+    def start_schedule_thread(self):
+        """启动调度线程"""
+        # 创建并启动下载调度线程
+        download_thread = threading.Thread(target=schedule_download_task, args=(self.ctx,))
+        download_thread.daemon = True
+        download_thread.start()
 # -------------------------- 对外唯一入口函数 Download --------------------------
 def Download(
     URL: str,                    # 文件下载链接
@@ -700,9 +814,9 @@ def Download(
 
 # -------------------------- 测试入口 --------------------------
 if __name__ == "__main__":
-    test_url = "https://desktop.githubusercontent.com/releases/3.5.2-14087268/GitHubDesktopSetup-x64.exe"
+    test_url = "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso"
     test_save = "D:\downloads"
-    test_name = "test_file.exe"
+    test_name = "ubuntu-24.04.4-desktop-amd64.iso"
     custom_header = {
         "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
     }
@@ -710,10 +824,10 @@ if __name__ == "__main__":
         URL=test_url,
         SavePath=test_save,
         FileName=test_name,
-        Jobs=26,
-        Size=128*1024,
+        Jobs=64,
+        Size=10*1024*1024,
         Head=custom_header,
-        Cache=4,
+        Cache=10,
         Run=None,
         disable_ssl=True
     )

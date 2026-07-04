@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Nodanium 下载拦截器",
+  "version": "1.0.0",
+  "description": "拦截浏览器下载，转发给 Nodanium 下载器",
+  "permissions": [
+    "storage",
+    "downloads",
+    "nativeMessaging",
+    "cookies",
+    "notifications",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon.png",
+      "48": "icons/icon.png",
+      "128": "icons/icon.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
+  }
+}

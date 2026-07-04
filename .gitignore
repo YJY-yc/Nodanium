@@ -3,3 +3,4 @@ Tests/
 wx_env/
 downloads/
 .vscode/
+__pycache__/
