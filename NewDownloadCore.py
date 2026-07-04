@@ -700,9 +700,9 @@ def Download(
 
 # -------------------------- 测试入口 --------------------------
 if __name__ == "__main__":
-    test_url = ""
+    test_url = "https://desktop.githubusercontent.com/releases/3.5.2-14087268/GitHubDesktopSetup-x64.exe"
     test_save = "D:\downloads"
-    test_name = ""
+    test_name = "test_file.exe"
     custom_header = {
         "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
     }
@@ -710,7 +710,7 @@ if __name__ == "__main__":
         URL=test_url,
         SavePath=test_save,
         FileName=test_name,
-        Jobs=16,
+        Jobs=26,
         Size=128*1024,
         Head=custom_header,
         Cache=4,
