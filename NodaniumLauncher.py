@@ -5,89 +5,129 @@ import os
 import wx
 import time
 import Adminchaker
-import os
 import sys
-import wx
-import time
 import logging
 import tempfile
-import psutil 
-from winotify import Notification
-roaming_path = os.getenv('APPDATA') + ''
-target_folder = os.path.join(roaming_path, "Nodanium")
+import psutil
+import platform 
+sys_type = platform.system()
+print("系统类型：", sys_type)
 
+# 数据目录配置
+target_folder = ""
 
+if sys_type == "Windows":
+    from winotify import Notification
+    roaming_path = os.getenv('APPDATA') + ''
+    target_folder = os.path.join(roaming_path, "Nodanium")
+    print("当前是 Windows 系统")
+elif sys_type == "Linux":
+    print("当前是 Linux 系统")
+    # Linux 使用 ~/.Nodanium 作为数据目录
+    home_path = os.path.expanduser("~")
+    target_folder = os.path.join(home_path, ".Nodanium")
+elif sys_type == "Darwin":
+    print("当前是 macOS 系统")
+    # macOS 使用 ~/Library/Application Support/Nodanium
+    home_path = os.path.expanduser("~")
+    target_folder = os.path.join(home_path, "Library", "Application Support", "Nodanium")
+
+# 创建数据目录
 try:
-    
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
-    if not os.path.exists(target_folder+"\\logs"):
-        os.makedirs(target_folder+"\\logs")
+    logs_folder = os.path.join(target_folder, "logs")
+    if not os.path.exists(logs_folder):
+        os.makedirs(logs_folder)
 except Exception as e:
     app = wx.App(False)
     wx.MessageBox(f"无法创建日志目录: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
     sys.exit(1)
+def show_notification(title, message):
+    if sys_type == "Windows":
+        toast = Notification(app_id="Nodanium",
+                            title=title,
+                            msg=message)
+        toast.show()
+    elif sys_type == "Linux":
+        try:
+            import subprocess
+            subprocess.run(["notify-send", title, message], check=True)
+        except Exception as e:
+            logging.warning(f"发送通知失败: {str(e)}")
+    elif sys_type == "Darwin":
+        try:
+            import subprocess
+            subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], check=True)
+        except Exception as e:
+            logging.warning(f"发送通知失败: {str(e)}")
 
-timestamp=time.strftime('%Y-%m-%d_%H-%M-%S')
+# 配置日志
+timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
 logging.basicConfig(
-    filename=os.path.join(target_folder+"\\logs", f'{timestamp}.log'),  
-    level=logging.INFO,     # 设置日志级别
+    filename=os.path.join(target_folder, "logs", f'{timestamp}.log'),
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='w'           
+    filemode='w'
 )
 
-
-timestamp=time.strftime('%Y-%m-%d_%H-%M-%S')
-logging.basicConfig(
-    filename=os.path.join(target_folder+"\\logs", f'{timestamp}.log'),  
-    level=logging.INFO,     # 设置日志级别
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='w'           
-)
+# 初始化数据文件
 if not os.path.exists(target_folder):
     os.makedirs(target_folder)
-    if not os.path.exists(target_folder+"\\logs"):
-        os.makedirs(target_folder+"\\logs")
-    
+    logs_folder = os.path.join(target_folder, "logs")
+    if not os.path.exists(logs_folder):
+        os.makedirs(logs_folder)
+        show_notification("初始化完成\n请在首选项中设置请求头", f"数据目录已创建：{target_folder}")
+
+# 创建默认下载目录配置
+dir_file = os.path.join(target_folder, "dir.txt")
+if not os.path.exists(dir_file):
+    default_download_dir = ""
+    if sys_type == "Windows":
+        default_download_dir = "D:/downloads/"
+    else:
+        default_download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
     try:
-        if not os.path.exists(target_folder+"\dir.txt"):
-            f=open(target_folder+"\dir.txt","w")
-            f.write("D:/downloads/")
-            f.close()
+        with open(dir_file, "w") as f:
+            f.write(default_download_dir)
     except Exception as e:
-        logging.warning(f"创建目录失败: {str(e)}")
- 
-    head_file = os.path.join(target_folder, "Head.ANT")
-    if not os.path.exists(head_file):
-        with open(head_file, 'w', encoding='utf-8') as f:
-            f.write("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
-    
-    
-    logging.info('数据目录已创建')
-    toast = Notification(app_id="Nodanium",
-                        title="初始化完成\n请在首选项中设置请求头",
-                        msg=f"数据目录已创建：{target_folder}")
-    toast.show()
+        logging.warning(f"创建目录配置失败: {str(e)}")
+
+# 创建默认请求头文件
+head_file = os.path.join(target_folder, "Head.ANT")
+default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+if not os.path.exists(head_file):
+    with open(head_file, 'w', encoding='utf-8') as f:
+        f.write(default_user_agent)
+
+logging.info('数据目录已创建')
 print(target_folder)
 
-
-
+# 显示通知
 
 
 
 if Adminchaker.is_admin():
-    toast = Notification(
-        app_id="Advanced Network Toolset",
-        title="已获得理员权限",
-        msg="程序正在以管理员权限运行"
-    )
-    toast.show()
+    admin_title = "已获得管理员权限"
+    admin_msg = "程序正在以管理员权限运行"
+    if sys_type == "Windows":
+        toast = Notification(
+            app_id="Advanced Network Toolset",
+            title=admin_title,
+            msg=admin_msg
+        )
+        toast.show()
+    elif sys_type == "Linux":
+        show_notification(admin_title, admin_msg)
+    elif sys_type == "Darwin":
+        show_notification(admin_title, admin_msg)
     logging.info('已获得管理员权限')
+
 def get_lockfile_path():
   
     return os.path.join(tempfile.gettempdir(), f".{os.path.basename(sys.argv[0])}.lock")
-def acquire_lock(lockfile):
 
+def acquire_lock(lockfile):
     try:
       
         fd = os.open(lockfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
@@ -103,7 +143,6 @@ def acquire_lock(lockfile):
         return False, f"无法创建锁文件: {str(e)}"
 
 def check_existing_instance(lockfile):
-
     try:
         with open(lockfile, 'r') as f:
             lines = f.read().splitlines()
@@ -120,7 +159,6 @@ def check_existing_instance(lockfile):
         return False, None, None
 
 def show_instance_warning(lockfile, pid, process):
-
     app = wx.App(False)
     dialog = wx.Dialog(None, title="程序已运行", size=(750, 300))
     logging.info('检测到程序已在运行中')
@@ -131,19 +169,16 @@ def show_instance_warning(lockfile, pid, process):
     panel = wx.Panel(dialog)
     vbox = wx.BoxSizer(wx.VERTICAL)
     
-
     st_message = wx.StaticText(panel, label=info)
     st_message.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     vbox.Add(st_message, flag=wx.ALL | wx.EXPAND, border=15)
     
- 
     btn_kill = wx.Button(panel, label="终止前一个实例(&K)", id=wx.ID_YES)
     btn_ignore = wx.Button(panel, label="忽略并继续(&I)", id=wx.ID_IGNORE)
     btn_exit = wx.Button(panel, label="退出(&Q)", id=wx.ID_NO)
 
-    message = wx.StaticText(panel, label="点击“终止前一个实例”终止前一个实例,点击“忽略并继续”将继续运行当前实例")
+    message = wx.StaticText(panel, label="点击\"终止前一个实例\"终止前一个实例,点击\"忽略并继续\"将继续运行当前实例")
     
-
     hbox = wx.BoxSizer(wx.HORIZONTAL)
     hbox.Add(btn_kill, flag=wx.RIGHT, border=10)
     hbox.Add(btn_ignore, flag=wx.RIGHT, border=10)
@@ -178,7 +213,6 @@ def show_instance_warning(lockfile, pid, process):
     return result
 
 def cleanup_lock(lockfile):
-
     try:
         if os.path.exists(lockfile):
             with open(lockfile, 'r') as f:
@@ -216,22 +250,20 @@ if not acquired:
                 wx.MessageBox(f"无法获取锁: {error}", "错误", wx.OK | wx.ICON_ERROR)
                 sys.exit(1)
         except Exception as e:
-            wx.MessageBox(f"无法清理锁文件: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
-            sys.exit(1)
-
- 
-
-    
-
-#============
-
-
+            pass
 
 
 try:
     logging.info('启动窗口模块')
     import Window
 except Exception as e:
-    wx.MessageBox(f"):启动程序失败\n你的设备可以运行本程序，需要调试以解决此问题\n导入窗口模块失败:\n {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+    print(f"导入失败:{str(e)}")
+    try:
+        app = wx.GetApp()
+        if app is None:
+            app = wx.App(False)
+    except:
+        app = wx.App(False)
+    wx.MessageBox(f"启动程序失败\n你的设备可以运行本程序，需要调试以解决此问题\n导入窗口模块失败:\n{str(e)}", "错误", wx.OK | wx.ICON_ERROR)
     logging.error(f'导入窗口模块失败{str(e)}')
 logging.info('主循环已结束')

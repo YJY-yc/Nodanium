@@ -7,20 +7,27 @@ import os
 import json
 import datetime
 import logging
+import platform
 
-import win32con
-import win32ui
-import win32gui
-from PIL import Image
+# 跨平台数据目录配置
+def get_data_folder():
+    """获取跨平台数据目录"""
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+    elif sys_type == "Linux":
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+    elif sys_type == "Darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
+    else:
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+
+DATA_FOLDER = get_data_folder()
+HISTORY_FILE = os.path.join(DATA_FOLDER, 'History.json')
 
 from DownloadCore import download_window
 logging.info('加载 DownloadUI 模块')
 download_history = []
-
-
-HISTORY_FILE = os.path.join(os.environ['APPDATA'], 'Nodanium', 'History.json')
-
-
 
 def load_download_history():
     logging.info("读取下载记录")
@@ -397,9 +404,15 @@ def create_download_panel(parent):
     refresh_download_list(download_list, image_list)
   
     create_context_menu(download_list)
-    config_dir = os.path.join(os.environ['APPDATA'], 'Nodanium')
+    # 跨平台配置目录
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        config_dir = os.path.join(os.getenv('APPDATA', ''), 'Nodanium')
+        default_save_path = os.path.join(os.environ['USERPROFILE'], 'Downloads')
+    else:
+        config_dir = os.path.join(os.path.expanduser("~"), '.Nodanium')
+        default_save_path = os.path.join(os.path.expanduser("~"), 'Downloads')
     dir_file = os.path.join(config_dir, 'dir.txt')
-    default_save_path = os.path.join(os.environ['USERPROFILE'], 'Downloads')
     if os.path.exists(dir_file):
         try:
             with open(dir_file, 'r', encoding='utf-8') as f:
@@ -413,7 +426,23 @@ def create_download_panel(parent):
     new_download_btn.Bind(wx.EVT_BUTTON, lambda e: on_new_download(panel, download_list,  image_list))
     delete_btn.Bind(wx.EVT_BUTTON, lambda e: on_delete_download(download_list))
     clear_btn.Bind(wx.EVT_BUTTON, lambda e: on_clear_history(download_list))
-    open_folder_btn.Bind(wx.EVT_BUTTON, lambda e: os.startfile(default_save_path))
+    def open_folder(e):
+        import subprocess
+        import platform
+        sys_type = platform.system()
+        if sys_type == "Windows":
+            os.startfile(default_save_path)
+        else:
+            # Linux/macOS 使用 xdg-open 或 open 命令
+            try:
+                if sys_type == "Darwin":
+                    subprocess.run(['open', default_save_path])
+                else:
+                    subprocess.run(['xdg-open', default_save_path])
+            except Exception as ex:
+                wx.MessageBox(f"无法打开文件夹: {str(ex)}", "错误", wx.OK | wx.ICON_ERROR)
+    
+    open_folder_btn.Bind(wx.EVT_BUTTON, open_folder)
     download_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: on_item_activated(download_list, e))
     refresh_btn.Bind(wx.EVT_BUTTON, lambda e: (
         
@@ -629,12 +658,17 @@ def on_new_download(parent, list_ctrl, image_list):
     
     import os
     import threading
+    import platform
     
-    config_dir = os.path.join(os.environ['APPDATA'], 'Nodanium')
+    # 跨平台配置目录
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        config_dir = os.path.join(os.getenv('APPDATA', ''), 'Nodanium')
+        default_save_path = os.path.join(os.environ['USERPROFILE'], 'Downloads')
+    else:
+        config_dir = os.path.join(os.path.expanduser("~"), '.Nodanium')
+        default_save_path = os.path.join(os.path.expanduser("~"), 'Downloads')
     dir_file = os.path.join(config_dir, 'dir.txt')
-    
-
-    default_save_path = os.path.join(os.environ['USERPROFILE'], 'Downloads')
     if os.path.exists(dir_file):
         try:
             with open(dir_file, 'r', encoding='utf-8') as f:
@@ -687,7 +721,7 @@ def on_new_download(parent, list_ctrl, image_list):
 
     thread_sizer = wx.BoxSizer(wx.HORIZONTAL)
     thread_label = wx.StaticText(single_panel, label="线程数 (1-1024):")
-    thread_count_spin = wx.SpinCtrl(single_panel, min=1, max=1024, initial=4)
+    thread_count_spin = wx.SpinCtrl(single_panel, min=1, max=1024, initial=4, size=(100, -1))
     thread_sizer.Add(thread_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     thread_sizer.Add(thread_count_spin, 0, wx.ALL, 5)
     single_sizer.Add(thread_sizer, 0, wx.EXPAND | wx.ALL, 5)

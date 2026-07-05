@@ -5,57 +5,65 @@ import wx
 import subprocess
 import os
 import dns.resolver
+import platform
 dns_list = None
 panel = None
 import time
 import dns.resolver
 
+# 跨平台配置
+sys_type = platform.system()
+if sys_type == "Windows":
+    HOSTS_PATH = r'C:\Windows\System32\drivers\etc\hosts'
+else:
+    HOSTS_PATH = '/etc/hosts'
 
-def resolve_dns(domain):
-    """
-    使用系统设置的 DNS 地址解析 DNS 记录
-    参数:
-        domain: 要解析的域名
-    返回:
-        包含 DNS 记录的字典
-    """
-    result = {
-        'A': [],
-        'AAAA': [],
-        'CNAME': []
-    }
-    start_time = time.time()
-
-    resolver = dns.resolver.Resolver()
-
-    try:
-        
-        answers = resolver.resolve(domain, 'A')
-        for rdata in answers:
-            result['A'].append(rdata.address)
-
-      
-        answers = resolver.resolve(domain, 'AAAA')
-        for rdata in answers:
-            result['AAAA'].append(rdata.address)
-
-     
+def flush_dns_cache():
+    """跨平台刷新DNS缓存"""
+    if sys_type == "Windows":
+        subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
+    elif sys_type == "Linux":
+        # Linux 刷新 DNS 缓存的几种方式
         try:
-            answers = resolver.resolve(domain, 'CNAME')
-            for rdata in answers:
-                result['CNAME'].append(rdata.target.to_text().rstrip('.'))
-        except dns.resolver.NoAnswer:
-            pass
+            subprocess.run(['systemd-resolve', '--flush-caches'], capture_output=True)
+        except FileNotFoundError:
+            try:
+                subprocess.run(['nscd', '-i', 'hosts'], capture_output=True)
+            except FileNotFoundError:
+                pass  # 某些系统可能没有这些命令
+    elif sys_type == "Darwin":
+        subprocess.run(['dscacheutil', '-flushcache'], capture_output=True)
 
-    except dns.resolver.NXDOMAIN:
-        raise Exception("域名不存在")
-    except dns.resolver.NoAnswer:
-        pass
+def get_dns_cache_windows():
+    """获取Windows DNS缓存（Windows专用）"""
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        result = subprocess.run(
+            ['ipconfig', '/displaydns'],
+            capture_output=True, 
+            text=True,
+            startupinfo=startupinfo
+        )
+        
+        if result.returncode != 0:
+            wx.MessageBox(
+                "获取DNS缓存失败，请尝试以管理员权限运行程序\n错误信息: " + result.stderr,
+                "错误", 
+                wx.OK|wx.ICON_ERROR
+            )
+            return ""
+            
+        return result.stdout
+        
     except Exception as e:
-        raise Exception(f"DNS 解析失败: {str(e)}")
-
-    result['lookup_time'] = f"{(time.time() - start_time) * 1000:.2f}ms"
-    return result
+        wx.MessageBox(
+            f"执行命令失败: {str(e)}\n请确保ipconfig命令可用", 
+            "错误", 
+            wx.OK|wx.ICON_ERROR
+        )
+        return ""
 
 def on_add_dns(event):
 
@@ -90,12 +98,12 @@ def on_add_dns(event):
             return
         try:
   
-            with open(r'C:\Windows\System32\drivers\etc\hosts', 'a') as f:
+            with open(HOSTS_PATH, 'a') as f:
                 f.write(f"\n{ip}\t{hostname}") 
             idx = dns_list.InsertItem(dns_list.GetItemCount(), hostname)
             dns_list.SetItem(idx, 1, ip)
             dns_list.SetItem(idx, 2, "N/A") 
-            subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
+            flush_dns_cache()
             
             wx.MessageBox("DNS记录已添加并生效", "成功", wx.OK|wx.ICON_INFORMATION)
             dlg.EndModal(wx.ID_OK)
@@ -263,11 +271,11 @@ def init_dns_tab(p):
             from host import host
             
             # 以管理员权限写入hosts文件
-            with open(r'C:\Windows\System32\drivers\etc\hosts', 'w') as f:
+            with open(HOSTS_PATH, 'w') as f:
                 f.write(host)
             
             # 刷新DNS缓存
-            subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
+            flush_dns_cache()
             
             wx.MessageBox("DNS已成功初始化", "成功", wx.OK|wx.ICON_INFORMATION)
             refresh_dns_list()
@@ -282,37 +290,11 @@ def init_dns_tab(p):
 
     init_btn.Bind(wx.EVT_BUTTON, on_init_dns)
     def get_dns_cache():
-        try:
-    
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            
-            result = subprocess.run(
-                ['ipconfig', '/displaydns'],
-                capture_output=True, 
-                text=True,
-                startupinfo=startupinfo
-            )
-            
-            if result.returncode != 0:
-                wx.MessageBox(
-                    "获取DNS缓存失败，请尝试以管理员权限运行程序\n错误信息: " + result.stderr,
-                    "错误", 
-                    wx.OK|wx.ICON_ERROR
-                )
-                return ""
-                
-            return result.stdout
-            
-        except Exception as e:
-            wx.MessageBox(
-                f"执行命令失败: {str(e)}\n请确保ipconfig命令可用", 
-                "错误", 
-                wx.OK|wx.ICON_ERROR
-            )
-            return ""
-        
-
+        if sys_type == "Windows":
+            return get_dns_cache_windows()
+        else:
+            # Linux/macOS 获取DNS缓存比较复杂，返回提示信息
+            return "DNS缓存查看功能仅在Windows系统上可用"
 
     def parse_dns_cache(output):
         records = []
@@ -346,7 +328,7 @@ def init_dns_tab(p):
         """解析hosts文件中的DNS记录"""
         records = []
         try:
-            with open(r'C:\Windows\System32\drivers\etc\hosts', 'r') as f:
+            with open(HOSTS_PATH, 'r') as f: 
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'): 
@@ -401,7 +383,7 @@ def init_dns_tab(p):
             try:
                 
                 hosts_path = r'C:\Windows\System32\drivers\etc\hosts'
-                with open(hosts_path, 'r', encoding='utf-8') as f:
+                with open(HOSTS_PATH, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
 
             

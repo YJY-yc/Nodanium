@@ -7,17 +7,28 @@ import requests
 import threading, os, time, shutil
 from urllib.parse import urlparse
 from pathlib import Path
-from winotify import Notification, audio
 from concurrent.futures import ThreadPoolExecutor
-
+import platform
 
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from DownloadUI import add_download_record, refresh_download_list, download_history, load_download_history, save_download_history
 
+def get_data_folder():
+    """获取跨平台数据目录"""
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+    elif sys_type == "Linux":
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+    elif sys_type == "Darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
+    else:
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+
 def get_download_dir():
-    appdata_dir = os.getenv('APPDATA')
-    config_path = os.path.join(appdata_dir, 'Nodanium', 'dir.txt')
+    appdata_dir = get_data_folder()
+    config_path = os.path.join(appdata_dir, 'dir.txt')
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return f.read().strip()

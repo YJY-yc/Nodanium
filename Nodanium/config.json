@@ -1,0 +1,25 @@
+{
+    "font_size": 17,
+    "list_button_size": 15,
+    "font_name": "微软雅黑",
+    "size": [
+        300,
+        30
+    ],
+    "size_button": [
+        100,
+        30
+    ],
+    "window_pos": [
+        100,
+        20
+    ],
+    "window_size": [
+        1020,
+        700
+    ],
+    "high_dpi": true,
+    "share_path": "D:/SharedFiles",
+    "default_port": 1524,
+    "auto_open_browser": true
+}

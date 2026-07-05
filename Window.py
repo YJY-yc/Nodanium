@@ -11,7 +11,7 @@ from os import makedirs
 import json
 import sys
 import threading
-
+import platform
 import wx.adv
 
 ChatPort=None
@@ -25,27 +25,46 @@ url_text_analyze=None
 time_ctrl=None
 
 
-roaming_path = os.getenv('APPDATA') + ''
 
-target_folder = os.path.join(roaming_path, "Nodanium")
+# 跨平台数据目录配置
+sys_type = platform.system()
+if sys_type == "Windows":
+    roaming_path = os.getenv('APPDATA', '')
+    target_folder = os.path.join(roaming_path, "Nodanium")
+elif sys_type == "Linux":
+    home_path = os.path.expanduser("~")
+    target_folder = os.path.join(home_path, ".Nodanium")
+elif sys_type == "Darwin":
+    home_path = os.path.expanduser("~")
+    target_folder = os.path.join(home_path, "Library", "Application Support", "Nodanium")
+else:
+    target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
 
 if not os.path.exists(target_folder):
     os.makedirs(target_folder)
 print(target_folder)
-if not os.path.exists(target_folder + "\dir.txt"):
-    with open(target_folder + "\dir.txt", "w") as f:
-        f.write("D:/Downloads/")
-f=open(target_folder+"\dir.txt","r")
-dirs=f.read()
-f.close()
-if dirs=="":
-    dirs="D:/Downloads/"
-    f=open(target_folder+"\dir.txt","w")
-    
-    f.write(dirs)
-    f.close()
-print(dirs)
 
+# 创建默认下载目录配置
+dir_file = os.path.join(target_folder, "dir.txt")
+if not os.path.exists(dir_file):
+    if sys_type == "Windows":
+        default_dir = "D:/Downloads/"
+    else:
+        default_dir = os.path.join(os.path.expanduser("~"), "Downloads") + "/"
+    with open(dir_file, "w") as f:
+        f.write(default_dir)
+
+with open(dir_file, "r") as f:
+    dirs = f.read()
+
+if dirs == "":
+    if sys_type == "Windows":
+        dirs = "D:/Downloads/"
+    else:
+        dirs = os.path.join(os.path.expanduser("~"), "Downloads") + "/"
+    with open(dir_file, "w") as f:
+        f.write(dirs)
+print(dirs)
 try:
     makedirs(dirs)
 except:
@@ -94,26 +113,79 @@ SizeButton = tuple(config['size_button'])
 windowPos = tuple(config['window_size'])
 
 try:
-
     import Adminchaker
+except ImportError as e:
+    print(f"导入 Adminchaker 失败: {e}")
+
+try:
     import DNSShower
+except ImportError as e:
+    print(f"导入 DNSShower 失败: {e}")
+
+try:
     import CommanDownload
+except ImportError as e:
+    print(f"导入 CommanDownload 失败: {e}")
+
+try:
     import NetworkTraffic
-    import ctypes
+except ImportError as e:
+    print(f"导入 NetworkTraffic 失败: {e}")
+
+try:
     import analyze
+except ImportError as e:
+    print(f"导入 analyze 失败: {e}")
+
+try:
     import DownloadUI
+except ImportError as e:
+    print(f"导入 DownloadUI 失败: {e}")
+
+try:
     from TPort import *
+except ImportError as e:
+    print(f"导入 TPort 失败: {e}")
+
+try:
     import FileShareShell
+except ImportError as e:
+    print(f"导入 FileShareShell 失败: {e}")
+
+try:
     import LinkButton
-    import DatchDownload 
+except ImportError as e:
+    print(f"导入 LinkButton 失败: {e}")
+
+try:
+    import DatchDownload
+except ImportError as e:
+    print(f"导入 DatchDownload 失败: {e}")
+
+try:
     from Ping import *
+except ImportError as e:
+    print(f"导入 Ping 失败: {e}")
+
+try:
     from update import *
+except ImportError as e:
+    print(f"导入 update 失败: {e}")
+
+try:
     import options
+except ImportError as e:
+    print(f"导入 options 失败: {e}")
+
+try:
     import FileServer
+except ImportError as e:
+    print(f"导入 FileServer 失败: {e}")
+
+try:
     import PortManager
 except ImportError as e:
-    pass
-    
+    print(f"导入 PortManager 失败: {e}")
 #插件
 program_dir = os.path.dirname(os.path.abspath(__file__))
 plugins_dir = os.path.join(program_dir, "Plugins")
@@ -386,10 +458,17 @@ def create_tray_icon(frame):
     
  
     def on_right_click(event):
-        tray.PopupMenu(create_menu())
-        
-    tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_UP, on_right_click)
-    return tray
+        # 跨平台弹出托盘菜单
+        try:
+            menu = create_menu()
+            # TaskBarIcon.PopupMenu() 不需要位置参数
+            tray.PopupMenu(menu)
+            menu.Destroy()
+        except Exception as e:
+            print(f"托盘菜单错误: {e}")
+            logging.error(f"托盘菜单错误: {e}")
+    
+    tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_DOWN, on_right_click)
 
 def main():
     global url_text_1, filename_text_1,check
@@ -402,10 +481,13 @@ def main():
     app = wx.App()
     
 
-    if config.get("high_dpi") == True:
+    if config.get("high_dpi") == True and sys_type == "Windows":
         logging.info('高DPI模式已启用')
-     
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 高DPI！！！！！！太不容易了!!!!
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 高DPI！！！！！！太不容易了!!!!
+        except Exception as e:
+            logging.warning(f"高DPI设置失败: {str(e)}")
     il = wx.ImageList(32, 32)
 
     bmp1 = wx.Bitmap('icons/path_to_icon1.png')
@@ -623,7 +705,7 @@ def main():
     panel3_sizer.Add(hbox_url, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
     hbox_timeout = wx.BoxSizer(wx.HORIZONTAL)
-    time_ctrl = wx.SpinCtrl(panel3, value="5", min=1, max=120)
+    time_ctrl = wx.SpinCtrl(panel3, value="5", min=1, max=120, size=(100, -1))
     hbox_timeout.Add(wx.StaticText(panel3, label="超时时间 (秒):"), 0, wx.ALL | wx.CENTER, 5)
     hbox_timeout.Add(time_ctrl, 0, wx.ALL | wx.CENTER, 5)
     panel3_sizer.Add(hbox_timeout, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
@@ -696,7 +778,11 @@ def main():
             info += f"  {addr[4][0]}\n"
       
         try:
-            result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+            sys_type = platform.system()
+            if sys_type == "Windows":
+                result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+            else:
+                result = subprocess.run(['ip', 'addr'], capture_output=True, text=True)
             info += "\n网关信息:\n"
             info += result.stdout
         except:
@@ -787,50 +873,67 @@ def main():
     
    
     def on_right_click(event):
-        menu = wx.Menu()
-         
-        copy_url_item = menu.Append(wx.ID_ANY, "复制URL")
+        try:
+            menu = wx.Menu()
+             
+            copy_url_item = menu.Append(wx.ID_ANY, "复制URL")
        
-        copy_filename_item = menu.Append(wx.ID_ANY, "复制文件名")
+            copy_filename_item = menu.Append(wx.ID_ANY, "复制文件名")
       
-        delete_item = menu.Append(wx.ID_ANY, "删除")
+            delete_item = menu.Append(wx.ID_ANY, "删除")
+            
+            def on_copy_url(event):
+                selected = history_list.GetFirstSelected()
+                if selected != -1:
+                    url = history_list.GetItem(selected, 0).GetText()
+                    try:
+                        if wx.TheClipboard.Open():
+                            wx.TheClipboard.SetData(wx.TextDataObject(url))
+                            wx.TheClipboard.Close()
+                    except Exception as clipboard_error:
+                        print(f"剪贴板操作失败: {clipboard_error}")
         
-        def on_copy_url(event):
-            selected = history_list.GetFirstSelected()
-            if selected != -1:
-                url = history_list.GetItem(selected, 0).GetText()
-                if wx.TheClipboard.Open():
-                    wx.TheClipboard.SetData(wx.TextDataObject(url))
-                    wx.TheClipboard.Close()
+            def on_copy_filename(event):
+                selected = history_list.GetFirstSelected()
+                if selected != -1:
+                    filename = history_list.GetItem(selected, 1).GetText()
+                    try:
+                        if wx.TheClipboard.Open():
+                            wx.TheClipboard.SetData(wx.TextDataObject(filename))
+                            wx.TheClipboard.Close()
+                    except Exception as clipboard_error:
+                        print(f"剪贴板操作失败: {clipboard_error}")
         
-        def on_copy_filename(event):
-            selected = history_list.GetFirstSelected()
-            if selected != -1:
-                filename = history_list.GetItem(selected, 1).GetText()
-                if wx.TheClipboard.Open():
-                    wx.TheClipboard.SetData(wx.TextDataObject(filename))
-                    wx.TheClipboard.Close()
+            def on_delete(event):
+                selected = history_list.GetFirstSelected()
+                if selected != -1:
+                    history_list.DeleteItem(selected)
+                    history = load_history()
+                    del history[selected]
+                    with open(os.path.join(target_folder, "history.json"), 'w', encoding='utf-8') as f:
+                        json.dump(history, f, ensure_ascii=False, indent=4)
         
-        def on_delete(event):
-            selected = history_list.GetFirstSelected()
-            if selected != -1:
-                
-                history_list.DeleteItem(selected)
-                
-                history = load_history()
-                del history[selected]
-                with open(os.path.join(target_folder, "history.json"), 'w', encoding='utf-8') as f:
-                    json.dump(history, f, ensure_ascii=False, indent=4)
-        
-        history_list.Bind(wx.EVT_MENU, on_copy_url, copy_url_item)
-        history_list.Bind(wx.EVT_MENU, on_copy_filename, copy_filename_item)
-        history_list.Bind(wx.EVT_MENU, on_delete, delete_item)
-        
-        history_list.PopupMenu(menu)
-        menu.Destroy()
-    
-    history_list.Bind(wx.EVT_CONTEXT_MENU, on_right_click)
-    
+            history_list.Bind(wx.EVT_MENU, on_copy_url, copy_url_item)
+            history_list.Bind(wx.EVT_MENU, on_copy_filename, copy_filename_item)
+            history_list.Bind(wx.EVT_MENU, on_delete, delete_item)
+            
+            # 列表控件的 PopupMenu 需要位置参数
+            if hasattr(event, 'GetPosition'):
+                pos = event.GetPosition()
+            else:
+                pos = wx.GetMousePosition()
+            
+            # 在 Linux 上可能需要转换坐标
+            if sys_type == "Linux":
+                # 尝试使用屏幕坐标
+                history_list.PopupMenu(menu, pos)
+            else:
+                history_list.PopupMenu(menu, pos)
+            
+            menu.Destroy()
+        except Exception as e:
+            print(f"右键菜单错误: {e}")
+            logging.error(f"右键菜单错误: {e}")
     def on_resize(event):
         new_size = frame.GetSize()
         history_list.SetSize((new_size[0]-170, new_size[1]-130))

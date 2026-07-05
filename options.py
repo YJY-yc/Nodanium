@@ -5,6 +5,7 @@ import wx
 import os
 import json
 import sys
+import platform
 
 config = {
     'font_size': 17,
@@ -17,9 +18,26 @@ config = {
     'high_dpi':True
 }
 
+def get_data_folder():
+    """获取跨平台数据目录"""
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+    elif sys_type == "Linux":
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+    elif sys_type == "Darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
+    else:
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+
 def on_go_to_file(event):
     if os.path.isdir(dirs):
-        os.startfile(dirs)
+        # 跨平台打开文件夹
+        if platform.system() == "Windows":
+            os.startfile(dirs)
+        else:
+            import subprocess
+            subprocess.run(["xdg-open", dirs])
 
 
 def options(event):
@@ -28,13 +46,12 @@ def options(event):
     Pos = config.get('window_pos', (100, 20))
     options_window = wx.Frame(None, title="首选项", size=(400, 600))
     options_window.SetBackgroundColour(wx.Colour(255, 255, 255))
-    roaming_path = os.getenv('APPDATA')
-    target_folder = os.path.join(roaming_path, "Nodanium")
+    
+    target_folder = get_data_folder()
     config_path = os.path.join(target_folder, "config.json")
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
 
-    config_path = os.path.join(target_folder, "config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:

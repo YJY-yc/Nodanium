@@ -13,15 +13,28 @@ from socketserver import ThreadingMixIn
 from io import BytesIO
 import cgi
 import re
-import time
+import time,platform
 
 (FileProgressEvent, EVT_FILE_PROGRESS) = wx.lib.newevent.NewEvent()
 (ServerStatusEvent, EVT_SERVER_STATUS) = wx.lib.newevent.NewEvent()
 
+server_thread = None
 
-roaming_path = os.getenv('APPDATA') + ''
+# 获取配置和目录信息
+sys_type = platform.system()
+if sys_type == "Windows":
+    target_folder = os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+elif sys_type == "Linux":
+    target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
+elif sys_type == "Darwin":
+    target_folder = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
+else:
+    target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
 
-target_folder = os.path.join(roaming_path, "Nodanium")
+if not os.path.exists(target_folder):
+    os.makedirs(target_folder)
+
+
 config = {
     'font_size': 17,
     'list_button_size': 15,
