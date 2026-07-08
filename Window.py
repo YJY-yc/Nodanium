@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.5.2.7"
+vision = "3.5.2.8"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -26,7 +26,6 @@ time_ctrl=None
 
 
 
-# 跨平台数据目录配置
 sys_type = platform.system()
 if sys_type == "Windows":
     roaming_path = os.getenv('APPDATA', '')
@@ -44,7 +43,7 @@ if not os.path.exists(target_folder):
     os.makedirs(target_folder)
 print(target_folder)
 
-# 创建默认下载目录配置
+
 dir_file = os.path.join(target_folder, "dir.txt")
 if not os.path.exists(dir_file):
     if sys_type == "Windows":
@@ -373,7 +372,7 @@ def create_tray_icon(frame):
     if Adminchaker.is_admin():
         icon = wx.Icon('icons/Admin_icon.png', wx.BITMAP_TYPE_PNG)
         tray = wx.adv.TaskBarIcon()
-        tray.SetIcon(icon, "Advanced Network Toolset(管理员)")
+        tray.SetIcon(icon, "Nodanium(管理员)")
     else:
         icon = wx.Icon('icons/ANT_icon.png', wx.BITMAP_TYPE_PNG)
         tray = wx.adv.TaskBarIcon()
@@ -384,7 +383,7 @@ def create_tray_icon(frame):
 
     status_bar = frame.CreateStatusBar(3)
     status_bar.SetStatusWidths([-1, -2, -1])
-    status_bar.SetStatusText("ANTKit", 1)
+    status_bar.SetStatusText("Nodanium", 1)
     status_bar.SetStatusText(f"版本: {vision}", 2)
 
 
@@ -458,10 +457,10 @@ def create_tray_icon(frame):
     
  
     def on_right_click(event):
-        # 跨平台弹出托盘菜单
+      
         try:
             menu = create_menu()
-            # TaskBarIcon.PopupMenu() 不需要位置参数
+     
             tray.PopupMenu(menu)
             menu.Destroy()
         except Exception as e:
@@ -470,7 +469,7 @@ def create_tray_icon(frame):
     
     tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_DOWN, on_right_click)
 
-def main():
+def Window(silence=False):
     global url_text_1, filename_text_1,check
     global url_text, filename_text, thread_choice, packet_size_choice, download_button_2
     global listbook
@@ -724,17 +723,17 @@ def main():
     panel3.SetSizer(panel3_sizer)
     panel4_sizer = wx.BoxSizer(wx.VERTICAL)
     
-    # 标题
+  
     about_title = wx.StaticText(panel4, label="关于软件")
     about_title.SetFont(wx.Font(FontSize + 5, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName=fontname))
     panel4_sizer.Add(about_title, 0, wx.ALL | wx.ALIGN_LEFT, 10)
     
-    # 软件信息
+
     about_info = wx.StaticText(panel4, label=f"作者: YJY-yc\n版本: {vision}\n文件保存路径: {dirs}\n默认端口: {str(config.get('default_port', 1524))}")
     about_info.SetFont(wx.Font(FontSize - 2, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
     panel4_sizer.Add(about_info, 0, wx.ALL | wx.ALIGN_LEFT, 10)
     
-    # 链接按钮的水平布局
+
     link_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
     update_link = LinkButton.create_link_button(panel4, "https://yjymain.rth1.xyz/", "icons/link_small.png", "网站链接", (100, 30))
@@ -747,7 +746,7 @@ def main():
     
     panel4_sizer.Add(link_sizer, 0, wx.ALL | wx.ALIGN_LEFT, 10)
     
-    # 功能按钮的水平布局
+
     button_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
     network_info_button = wx.Button(panel4, label="显示网络信息", size=(160, 40))
@@ -760,7 +759,7 @@ def main():
     
     panel4_sizer.Add(button_sizer, 0, wx.ALL | wx.ALIGN_LEFT, 10)
     
-    # 网络信息文本框
+
     network_info_text = wx.TextCtrl(panel4, size=(-1, 150), style=wx.TE_MULTILINE | wx.TE_READONLY)
     panel4_sizer.Add(network_info_text, 1, wx.ALL | wx.EXPAND, 10)
     
@@ -801,50 +800,188 @@ def main():
     
     download_button_op.Bind(wx.EVT_BUTTON, options.options)
     
-    # 设置面板的布局
+ 
     panel4.SetSizer(panel4_sizer)
 
+    panel0.SetBackgroundColour(wx.Colour(243, 243, 243))  # VS Code浅色主题背景
     
-    main_sizer = wx.BoxSizer(wx.VERTICAL)
-    main_sizer.AddSpacer(50)
-    wx.StaticText(panel0,label="主页 ANTKit", pos=(10, 0)).SetFont(wx.Font(25, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
+    main_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    
+ 
+    left_panel = wx.Panel(panel0)
+    left_panel.SetBackgroundColour(wx.Colour(255, 255, 255))  # 白色卡片
+    left_sizer = wx.BoxSizer(wx.VERTICAL)
+    
+ 
+    title_text = wx.StaticText(left_panel, label="Nodanium")
+    title_text.SetFont(wx.Font(30, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+    title_text.SetForegroundColour(wx.Colour(30, 30, 30))
+    left_sizer.Add(title_text, 0, wx.TOP | wx.LEFT | wx.BOTTOM, 20)
+    
+    
+    subtitle_text = wx.StaticText(left_panel, label=f"版本 {vision}")
+    subtitle_text.SetForegroundColour(wx.Colour(100, 100, 100))
+    subtitle_text.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    left_sizer.Add(subtitle_text, 0, wx.LEFT | wx.BOTTOM, 30)
+    
 
-    header_path = os.path.join(target_folder, "Head.ANT")
+    update_title = wx.StaticText(left_panel, label="更新信息")
+    update_title.SetForegroundColour(wx.Colour(50, 50, 50))
+    update_title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_SEMIBOLD))
+    left_sizer.Add(update_title, 0, wx.LEFT | wx.BOTTOM, 10)
+    
 
-    update_text = wx.TextCtrl(panel0, style=wx.TE_MULTILINE | wx.TE_READONLY)
-    main_sizer.Add(update_text, 1, wx.EXPAND | wx.ALL, 10)
+    update_text = wx.TextCtrl(left_panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE)
+    update_text.SetBackgroundColour(wx.Colour(255, 255, 255))
+    update_text.SetForegroundColour(wx.Colour(50, 50, 50))
+    update_text.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    left_sizer.Add(update_text, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+    
+    left_panel.SetSizer(left_sizer)
+    main_sizer.Add(left_panel, 1, wx.EXPAND | wx.ALL, 20)
+    
 
+    right_panel = wx.Panel(panel0)
+    right_panel.SetBackgroundColour(wx.Colour(255, 255, 255))  # 白色卡片
+    right_sizer = wx.BoxSizer(wx.VERTICAL)
+    
 
-    link = LinkButton.create_link_button(panel0, "https://yjymain.rth1.xyz", "icons/link_small.png", "https://yjymain.rth1.xyz", (300, 30))
+    action_title = wx.StaticText(right_panel, label="开始")
+    action_title.SetForegroundColour(wx.Colour(50, 50, 50))
+    action_title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_SEMIBOLD))
+    right_sizer.Add(action_title, 0, wx.BOTTOM, 15)
+    
+    def on_new_download(event):
+        listbook.ChangeSelection(1)  # 切换到下载功能页
+    
+    new_download_btn = wx.Button(right_panel, label="   新建下载")
+    new_download_btn.SetBitmap(wx.Bitmap("./icons/add.png"), wx.LEFT)
+    new_download_btn.SetBackgroundColour(wx.Colour(0, 122, 204))
+    new_download_btn.SetForegroundColour(wx.Colour(255, 255, 255))
+    new_download_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    new_download_btn.SetMinSize((280, 40))
+    new_download_btn.Bind(wx.EVT_BUTTON, on_new_download)
+    right_sizer.Add(new_download_btn, 0, wx.BOTTOM, 8)
+    
+    # 打开保存路径按钮
+    def on_open_save_path(event):
+        if os.path.isdir(dirs):
+            if platform.system() == "Windows":
+                os.startfile(dirs)
+            else:
+                import subprocess
+                subprocess.run(["xdg-open", dirs])
+    
+    open_path_btn = wx.Button(right_panel, label="   打开保存路径")
+    open_path_btn.SetBitmap(wx.Bitmap("./icons/view.png"), wx.LEFT)
+    open_path_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
+    open_path_btn.SetForegroundColour(wx.Colour(50, 50, 50))
+    open_path_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    open_path_btn.SetMinSize((280, 40))
+    open_path_btn.Bind(wx.EVT_BUTTON, on_open_save_path)
+    right_sizer.Add(open_path_btn, 0, wx.BOTTOM, 8)
+    
+
+    pref_btn = wx.Button(right_panel, label="   首选项")
+    pref_btn.SetBitmap(wx.Bitmap("./icons/init.png"), wx.LEFT)
+    pref_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
+    pref_btn.SetForegroundColour(wx.Colour(50, 50, 50))
+    pref_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    pref_btn.SetMinSize((280, 40))
+    pref_btn.Bind(wx.EVT_BUTTON, options.options)
+    right_sizer.Add(pref_btn, 0, wx.BOTTOM, 8)
+    
 
     def on_exit(event):
         logging.info('程序退出')
         sys.exit(0)
+    
+    exit_btn = wx.Button(right_panel, label="   退出程序")
+    exit_btn.SetBitmap(wx.Bitmap("./icons/exit.png"), wx.LEFT)
+    exit_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
+    exit_btn.SetForegroundColour(wx.Colour(50, 50, 50))
+    exit_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    exit_btn.SetMinSize((280, 40))
+    exit_btn.Bind(wx.EVT_BUTTON, on_exit)
+    right_sizer.Add(exit_btn, 0, wx.BOTTOM, 8)
+    
 
-
-    exit_button = wx.Button(panel0, label="退出程序")
-    exit_button.SetBitmap(wx.Bitmap("./icons/exit.png"), wx.LEFT)
-    exit_button.SetFont(wx.Font(FontSize-4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
-    exit_button.Bind(wx.EVT_BUTTON, on_exit)
-
-    button_link_sizer = wx.BoxSizer(wx.HORIZONTAL)
-    button_link_sizer.Add(exit_button, 0, wx.ALL, 10) 
-
+    link = LinkButton.create_link_button(right_panel, "https://yjymain.rth1.xyz", "icons/link_small.png", "https://yjymain.rth1.xyz", (280, 40))
     if link:
-        button_link_sizer.Add(link, 0, wx.ALL, 10)  
+        link.SetBackgroundColour(wx.Colour(230, 230, 230))
+        right_sizer.Add(link, 0, wx.BOTTOM, 8)
+    
 
-    main_sizer.Add(button_link_sizer, 0, wx.ALIGN_LEFT)
- 
+    separator = wx.StaticLine(right_panel, style=wx.LI_HORIZONTAL)
+    separator.SetForegroundColour(wx.Colour(200, 200, 200))
+    right_sizer.Add(separator, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 15)
+    
+    # 最近下载标题
+    recent_title = wx.StaticText(right_panel, label="最近下载")
+    recent_title.SetForegroundColour(wx.Colour(50, 50, 50))
+    recent_title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_SEMIBOLD))
+    right_sizer.Add(recent_title, 0, wx.BOTTOM, 10)
+    
+    # 最近下载列表
+    recent_list = wx.ListCtrl(right_panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_NONE)
+    recent_list.SetBackgroundColour(wx.Colour(255, 255, 255))
+    recent_list.SetForegroundColour(wx.Colour(50, 50, 50))
+    
+    header_attr = wx.ItemAttr()
+    header_attr.SetBackgroundColour(wx.Colour(240, 240, 240))
+    header_attr.SetTextColour(wx.Colour(100, 100, 100))
+    recent_list.SetHeaderAttr(header_attr)
+    recent_list.InsertColumn(0, '文件名', width=180)
+    recent_list.InsertColumn(1, '日期', width=90)
+    
+
+    download_history_file = os.path.join(target_folder, 'History.json')
+    if os.path.exists(download_history_file):
+        try:
+            with open(download_history_file, 'r', encoding='utf-8') as f:
+                history_data = json.load(f)
+                if isinstance(history_data, list):
+                   
+                    recent_items = history_data[-10:][::-1]
+                    for item in recent_items:
+                        filename = item.get('filename', '未知文件')
+                        timestamp = item.get('timestamp', '')
+                        recent_list.InsertItem(recent_list.GetItemCount(), filename)
+                        recent_list.SetItem(recent_list.GetItemCount() - 1, 1, timestamp)
+        except Exception as e:
+            logging.error(f"加载下载历史失败: {e}")
+    
+    right_sizer.Add(recent_list, 1, wx.EXPAND, 0)
+    right_panel.SetSizer(right_sizer)
+    main_sizer.Add(right_panel, 0, wx.ALL | wx.EXPAND, 20)
+    
     panel0.SetSizer(main_sizer)
+    
 
     def fetch_update_info():
-        try: 
-            with open("info.txt", "r", encoding='utf-8') as f:
+        try:
+            with open("info.md", "r", encoding='utf-8') as f:
                 info = f.read()
             wx.CallAfter(update_text.SetValue, info if info.strip() else "暂无更新信息")
         except FileNotFoundError:
-            wx.CallAfter(update_text.SetValue, "错误：info.txt 文件未找到")
-            logging.error("错误：info.txt 文件未找到")
+            wx.CallAfter(update_text.SetValue, "错误：info.md文件未找到")
+            logging.error("错误：info.md文件未找到")    
+        except PermissionError:
+            wx.CallAfter(update_text.SetValue, "错误：没有权限读取文件")
+            logging.error("错误：没有权限读取文件")
+        except Exception as e:
+            wx.CallAfter(update_text.SetValue, f"获取信息失败: {str(e)}")
+            logging.warning(f"获取信息失败: {str(e)}")
+    
+    threading.Thread(target=fetch_update_info, daemon=True).start()
+    def fetch_update_info():
+        try: 
+            with open("info.md", "r", encoding='utf-8') as f:
+                info = f.read()
+            wx.CallAfter(update_text.SetValue, info if info.strip() else "暂无更新信息")
+        except FileNotFoundError:
+            wx.CallAfter(update_text.SetValue, "错误：info.md文件未找到")
+            logging.error("错误：info.md文件未找到")    
         except PermissionError:
             wx.CallAfter(update_text.SetValue, "错误：没有权限读取文件")
             logging.error("错误：没有权限读取文件")
@@ -917,15 +1054,15 @@ def main():
             history_list.Bind(wx.EVT_MENU, on_copy_filename, copy_filename_item)
             history_list.Bind(wx.EVT_MENU, on_delete, delete_item)
             
-            # 列表控件的 PopupMenu 需要位置参数
+ 
             if hasattr(event, 'GetPosition'):
                 pos = event.GetPosition()
             else:
                 pos = wx.GetMousePosition()
             
-            # 在 Linux 上可能需要转换坐标
+
             if sys_type == "Linux":
-                # 尝试使用屏幕坐标
+   
                 history_list.PopupMenu(menu, pos)
             else:
                 history_list.PopupMenu(menu, pos)
@@ -948,11 +1085,16 @@ def main():
         print(f"加载历史记录时出错: {e}")
         logging.error(f"加载历史记录时出错: {e}")
 
-    frame.Show()
+    if not silence:
+        frame.Show()
 
     tray = create_tray_icon(frame)
-    frame.Show()
+    
+    if silence:
+        # 静默模式：只创建托盘，不显示窗口
+        frame.Hide()
+    else:
+        frame.Show()
 
     app.MainLoop()
 
-main()

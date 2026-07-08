@@ -4,3 +4,5 @@ wx_env/
 downloads/
 .vscode/
 __pycache__/
+__pycache__/
+Pack.sh

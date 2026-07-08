@@ -25,7 +25,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 # 全局常量
 DEFAULT_TIMEOUT = 240
-DEFAULT_RETRY = 10
+DEFAULT_RETRY = 100 #重试次数
 GRID_CELL_SIZE = 12
 NDF_SUFFIX = ".ndf"
 PROGRESS_JSON_NAME = "download_progress.json"
@@ -224,7 +224,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
     adapter = requests.adapters.HTTPAdapter(pool_connections=ctx.jobs, pool_maxsize=ctx.jobs)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-
+    retry_times = 0
     while not ctx.stop_event.is_set():
         try:
             task: ChunkTask = ctx.task_queue.get(timeout=1)
@@ -272,9 +272,11 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                     if task.downloaded >= total_chunk_len:
                         chunk_finish_flag = True
                         break
+            
             except Exception as e:
                 retry_times += 1
                 err_msg = f"分片{task.chunk_idx}异常 重试{retry_times}/{DEFAULT_RETRY}: {str(e)}"
+                print(f"分片{task.chunk_idx}异常 重试{retry_times}/{DEFAULT_RETRY}: {str(e)}")
                 ui_push_log(ctx, err_msg)
                 time.sleep(2)
         
@@ -814,9 +816,9 @@ def Download(
 
 # -------------------------- 测试入口 --------------------------
 if __name__ == "__main__":
-    test_url = "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso"
-    test_save = "D:\downloads"
-    test_name = "ubuntu-24.04.4-desktop-amd64.iso"
+    test_url = ""
+    test_save = ""
+    test_name = ""
     custom_header = {
         "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
     }
@@ -824,8 +826,8 @@ if __name__ == "__main__":
         URL=test_url,
         SavePath=test_save,
         FileName=test_name,
-        Jobs=64,
-        Size=10*1024*1024,
+        Jobs=2,
+        Size=16*1024,
         Head=custom_header,
         Cache=10,
         Run=None,

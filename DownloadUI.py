@@ -526,7 +526,7 @@ def on_menu_show_items(event, list_ctrl):
             list_ctrl_items.InsertColumn(1, "文件名", width=200)
             list_ctrl_items.InsertColumn(2, "状态", width=100)
             vbox.Add(list_ctrl_items, 1, wx.ALL | wx.EXPAND, 10)
-            
+            #Enchantments:[{id:"minecraft:quick_charge",lvl:5s},{id:"minecraft:mending",lvl:1s}]
             download_items = record.get("download_items", [])
             for i, item in enumerate(download_items):
                 index = list_ctrl_items.InsertItem(i, item.get("url", ""))
