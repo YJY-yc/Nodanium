@@ -19,7 +19,7 @@
         700
     ],
     "high_dpi": true,
-    "share_path": "D:/SharedFiles",
+    "share_path": "/home/yujy/SharedFiles",
     "default_port": 1524,
     "auto_open_browser": true
 }

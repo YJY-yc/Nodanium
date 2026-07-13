@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.5.2.8"
+vision = "3.5.2.9"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -363,22 +363,39 @@ def on_packet_size_enter(frame, event):
 
 
 
-
-#=====================
-
-
-
 def create_tray_icon(frame):
-    if Adminchaker.is_admin():
-        icon = wx.Icon('icons/Admin_icon.png', wx.BITMAP_TYPE_PNG)
-        tray = wx.adv.TaskBarIcon()
-        tray.SetIcon(icon, "Nodanium(管理员)")
-    else:
-        icon = wx.Icon('icons/ANT_icon.png', wx.BITMAP_TYPE_PNG)
-        tray = wx.adv.TaskBarIcon()
-        tray.SetIcon(icon, "Nodanium(钒合金)")
-
-
+    tray = None
+    try:
+        print("正在创建托盘图标...")
+        logging.info("正在创建托盘图标...")
+ 
+        icon_path = 'icons/Admin_icon.png' if Adminchaker.is_admin() else 'icons/ANT_icon.png'
+        if not os.path.exists(icon_path):
+            print(f"错误：图标文件不存在: {icon_path}")
+            logging.error(f"错误：图标文件不存在: {icon_path}")
+            return None
+        
+        if Adminchaker.is_admin():
+            icon = wx.Icon('icons/Admin_icon.png', wx.BITMAP_TYPE_PNG)
+            print("管理员图标加载成功")
+            tray = wx.adv.TaskBarIcon()
+            print("TaskBarIcon 创建成功")
+            tray.SetIcon(icon, "Nodanium(管理员)")
+            print("托盘图标设置成功")
+        else:
+            icon = wx.Icon('icons/ANT_icon.png', wx.BITMAP_TYPE_PNG)
+            print("普通图标加载成功")
+            tray = wx.adv.TaskBarIcon()
+            print("TaskBarIcon 创建成功")
+            tray.SetIcon(icon, "Nodanium(钒合金)")
+            print("托盘图标设置成功")
+            
+    except Exception as e:
+        print(f"创建托盘图标失败: {e}")
+        import traceback
+        traceback.print_exc()
+        logging.error(f"创建托盘图标失败: {e}")
+        return None
     gif_path = "icons/load.gif"
 
     status_bar = frame.CreateStatusBar(3)
@@ -386,26 +403,30 @@ def create_tray_icon(frame):
     status_bar.SetStatusText("Nodanium", 1)
     status_bar.SetStatusText(f"版本: {vision}", 2)
 
-
     animation = wx.adv.Animation(gif_path)
     if animation.IsOk():
+    
+        def init_animation():
+            animation_ctrl = wx.adv.AnimationCtrl(status_bar, -1, animation)
+            animation_ctrl.Play()
 
-        animation_ctrl = wx.adv.AnimationCtrl(status_bar, -1, animation)
-        animation_ctrl.Play()
+            def update_animation_position():
+                try:
+                    rect = status_bar.GetFieldRect(0)
+                    animation_ctrl.SetPosition((rect.x, rect.y))
+                    animation_ctrl.SetSize((rect.width, rect.height))
+                except Exception:
+                    pass  
 
-        def update_animation_position():
-            
-            rect = status_bar.GetFieldRect(0)
-            animation_ctrl.SetPosition((rect.x, rect.y))
-            animation_ctrl.SetSize((rect.width, rect.height))
-
-        update_animation_position()
-
-        def on_size(event):
             update_animation_position()
-            event.Skip()
 
-        status_bar.Bind(wx.EVT_SIZE, on_size)
+            def on_size(event):
+                update_animation_position()
+                event.Skip()
+
+            status_bar.Bind(wx.EVT_SIZE, on_size)
+        
+        wx.CallAfter(init_animation)
 
 
     def create_menu():
@@ -468,7 +489,7 @@ def create_tray_icon(frame):
             logging.error(f"托盘菜单错误: {e}")
     
     tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_DOWN, on_right_click)
-
+    return tray  
 def Window(silence=False):
     global url_text_1, filename_text_1,check
     global url_text, filename_text, thread_choice, packet_size_choice, download_button_2
@@ -521,8 +542,6 @@ def Window(silence=False):
     il.Add(bmp14)
     il.Add(bmp15)
     icon = wx.Icon('icons/path_to_icon1.png', wx.BITMAP_TYPE_PNG)
-    tray = wx.adv.TaskBarIcon()
-    tray.SetIcon(icon, "Nodanium")
 
     global frame 
     if Adminchaker.is_admin(): 

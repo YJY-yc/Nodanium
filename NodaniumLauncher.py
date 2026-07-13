@@ -66,7 +66,7 @@ if len(sys.argv) > 1:
     parsed_args = parse_args(args)
     
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.5.2.8\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 3.5.2.9\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()
