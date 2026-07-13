@@ -82,7 +82,7 @@ config = {
     'window_pos': (100, 20),  
     'window_size': [1020, 700],
     'high_dpi':True,
-    'share_path': "D:/SharedFiles",
+    'share_path': os.path.join(os.path.expanduser("~"), "SharedFiles") if sys.platform.startswith('linux') else "D:/SharedFiles",
     'default_port':1524,
     'auto_open_browser':True
 }
@@ -376,7 +376,7 @@ def create_tray_icon(frame):
     else:
         icon = wx.Icon('icons/ANT_icon.png', wx.BITMAP_TYPE_PNG)
         tray = wx.adv.TaskBarIcon()
-        tray.SetIcon(icon, "Advanced Network Toolset")
+        tray.SetIcon(icon, "Nodanium(钒合金)")
 
 
     gif_path = "icons/load.gif"
@@ -522,13 +522,13 @@ def Window(silence=False):
     il.Add(bmp15)
     icon = wx.Icon('icons/path_to_icon1.png', wx.BITMAP_TYPE_PNG)
     tray = wx.adv.TaskBarIcon()
-    tray.SetIcon(icon, "Advanced Network Toolset")
+    tray.SetIcon(icon, "Nodanium")
 
     global frame 
     if Adminchaker.is_admin(): 
-        frame = wx.Frame(None, title="Advanced Network Toolset(管理员)", size=windowPos) 
+        frame = wx.Frame(None, title="Nodanium(管理员)", size=windowPos) 
     else:
-        frame = wx.Frame(None, title="Advanced Network Toolset", size=windowPos)
+        frame = wx.Frame(None, title="Nodanium", size=windowPos)
     
    
 
@@ -737,7 +737,7 @@ def Window(silence=False):
     link_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
     update_link = LinkButton.create_link_button(panel4, "https://yjymain.rth1.xyz/", "icons/link_small.png", "网站链接", (100, 30))
-    github_link = LinkButton.create_link_button(panel4, "https://github.com/YJY-yc/Advanced-Network-Toolset", "icons/link_small.png", "GitHub链接", (130, 30))
+    github_link = LinkButton.create_link_button(panel4, "https://github.com/YJY-yc/Nodanium", "icons/link_small.png", "GitHub链接", (130, 30))
     
     if update_link:
         link_sizer.Add(update_link, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)

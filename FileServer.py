@@ -414,7 +414,7 @@ class FileSharePanel(wx.Panel):
   
         port_sizer = wx.BoxSizer(wx.HORIZONTAL)
         port_label = wx.StaticText(self, label="端口号:")
-        self.port_ctrl = wx.SpinCtrl(self, min=1024, max=65535, initial=default_port)
+        self.port_ctrl = wx.SpinCtrl(self, min=0, max=65535, initial=default_port)
         port_sizer.Add(port_label, 0, wx.ALIGN_CENTER|wx.ALL, 5)
         port_sizer.Add(self.port_ctrl, 0, wx.ALL, 5)
         

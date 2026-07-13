@@ -4,7 +4,7 @@
 import wx
 import os
 import json
-import time
+import sys
 import threading
 import logging
 import webbrowser
@@ -18,7 +18,6 @@ target_folder = os.path.join(os.getenv('APPDATA', ''), "Nodanium")
 if not os.path.exists(target_folder):
     os.makedirs(target_folder)
 
-# 读取配置
 def load_config():
     config_path = os.path.join(target_folder, "config.json")
     default_config = {
@@ -30,7 +29,7 @@ def load_config():
         'window_pos': (100, 20),  
         'window_size': [1020, 700],
         'high_dpi': True,
-        'share_path': "D:/SharedFiles",
+        'share_path': os.path.join(os.path.expanduser("~"), "SharedFiles") if sys.platform.startswith('linux') else "D:/SharedFiles",
         'default_port': 1524,
         'auto_open_browser': True
     }
@@ -123,8 +122,7 @@ def MainPanel(parent):
         if not os.path.exists(file_path):
             wx.MessageBox("文件不存在！", "错误", wx.OK | wx.ICON_ERROR)
             return
-        
-        # 获取本机IP地址
+      
         import socket
         hostname = socket.gethostname()
         addrinfo = socket.getaddrinfo(hostname, None)
@@ -139,7 +137,7 @@ def MainPanel(parent):
             wx.MessageBox("无法获取IP地址", "错误", wx.OK | wx.ICON_ERROR)
             return
         
-        # 显示服务器信息
+       
         wx.CallAfter(log_text.AppendText, f"服务器启动在以下地址:\n")
         for ip in ip_addresses:
             wx.CallAfter(log_text.AppendText, f"{ip}:{port}\n")
@@ -148,16 +146,14 @@ def MainPanel(parent):
         
         start_button.Disable()
         stop_button.Enable()
-        
-        # 启动文件服务器线程
+   
         server_thread = threading.Thread(
             target=start_file_server,
             args=(port, file_path, os.path.dirname(file_path), lambda msg: wx.CallAfter(log_text.AppendText, msg)),
             daemon=True
         )
         server_thread.start()
-        
-        # 自动打开浏览器
+    
         if config.get('auto_open_browser', True):
             webbrowser.open(f"http://localhost:{port}")
             logging.info(f'自动打开浏览器: http://localhost:{port}')
