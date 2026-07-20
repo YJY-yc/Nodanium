@@ -8,8 +8,31 @@ import json
 import datetime
 import logging
 import platform
-
+import uuid
+import subprocess 
+from FileIcon import get_file_icon, get_fallback_icon
 # 跨平台数据目录配置
+def open_file_or_folder(file_path):
+    """跨平台打开文件或文件夹"""
+    sys_type = platform.system()
+    
+    try:
+        if sys_type == "Windows":
+            os.startfile(file_path)
+        elif sys_type == "Darwin":
+            # macOS 使用 open 命令
+            subprocess.run(['open', file_path], check=True)
+        else:
+            # Linux 使用 xdg-open 命令
+            subprocess.run(['xdg-open', file_path], check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"打开失败: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"打开失败: {e}")
+        return False
+
 def get_data_folder():
     """获取跨平台数据目录"""
     sys_type = platform.system()
@@ -21,13 +44,31 @@ def get_data_folder():
         return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     else:
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
-
 DATA_FOLDER = get_data_folder()
 HISTORY_FILE = os.path.join(DATA_FOLDER, 'History.json')
 
 from DownloadCore import download_window
 logging.info('加载 DownloadUI 模块')
 download_history = []
+
+def generate_uuid():
+    """生成唯一识别码UUID"""
+    return str(uuid.uuid4())
+
+def save_download_history():
+    """保存下载历史"""
+    try:
+        history_dir = os.path.dirname(HISTORY_FILE)
+        if not os.path.exists(history_dir):
+            os.makedirs(history_dir, exist_ok=True)
+            
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(download_history, f, ensure_ascii=False, indent=2)
+        print(f"成功保存 {len(download_history)} 条下载记录")
+        logging.info(f"成功保存 {len(download_history)} 条下载记录")
+    except Exception as e:
+        print(f"保存下载历史失败: {e}")
+        logging.error(f"保存下载历史失败: {e}")
 
 def load_download_history():
     logging.info("读取下载记录")
@@ -44,6 +85,11 @@ def load_download_history():
                 
                 if isinstance(loaded_history, list):
                     download_history = loaded_history
+                    
+          
+                    for record in download_history:
+                        if "uuid" not in record:
+                            record["uuid"] = generate_uuid()
                     
                     download_history.sort(key=lambda x: x.get("timestamp", ""))
                     print(f"成功加载 {len(download_history)} 条下载记录")
@@ -63,28 +109,36 @@ def load_download_history():
         print(f"加载下载历史失败: {e}")
         logging.error(f"加载下载历史失败: {e}")
         download_history = []
-        
+
+def update_download_record_by_uuid(uuid, **kwargs):
+    """通过UID修改下载记录内容"""
+    global download_history
+    for record in download_history:
+        if record.get("uuid") == uuid:
+            for key, value in kwargs.items():
+                if key in record:
+                    record[key] = value
+            save_download_history()
+            logging.info(f"成功修改UUID为 {uuid} 的下载记录")
+            return True
+    logging.warning(f"未找到UUID为 {uuid} 的下载记录")
+    return False
+
+def get_download_record_by_uuid(uuid):
+    """通过UUID获取下载记录"""
+    for record in download_history:
+        if record.get("uuid") == uuid:
+            return record
+    return None
+
 
 if not download_history or len(download_history) == 0:
     load_download_history()
 
-def save_download_history():
-    """保存下载历史"""
-    try:
-        history_dir = os.path.dirname(HISTORY_FILE)
-        if not os.path.exists(history_dir):
-            os.makedirs(history_dir, exist_ok=True)
-            
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(download_history, f, ensure_ascii=False, indent=2)
-        print(f"成功保存 {len(download_history)} 条下载记录")
-        logging.info(f"成功保存 {len(download_history)} 条下载记录")
-    except Exception as e:
-        print(f"保存下载历史失败: {e}")
-        logging.error(f"保存下载历史失败: {e}")
 def add_download_record(url, filename, save_path, status="已完成", file_size=0, download_items=None, batch_id=None, completed=None, total=None, file_count=None, success_count=None, failed_count=None):
     """添加下载记录"""
     record = {
+        "uuid": generate_uuid(),
         "url": url,
         "filename": filename,
         "save_path": save_path,
@@ -96,7 +150,6 @@ def add_download_record(url, filename, save_path, status="已完成", file_size=
     if download_items is not None:
         record["download_items"] = download_items
     
-   
     if batch_id is not None:
         record["batch_id"] = batch_id
     
@@ -115,175 +168,7 @@ def add_download_record(url, filename, save_path, status="已完成", file_size=
     download_history.append(record)
     save_download_history()
     return record
-def get_file_icon(file_path, size=32):
 
-    icon_size = (size, size)
-    
-    try:
-       
-        if not os.path.exists(file_path):
-            print(f"文件不存在: {file_path}")
-            logging.warning(f"文件不存在: {file_path}")
-            return get_fallback_icon(file_path, size)
-        
-        file_path = os.path.abspath(file_path)
-        
-
-        if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.ico', '.gif')):
-            if True:
-                try:
-                   
-                    img = Image.open(file_path)
-                   
-                    if img.mode != 'RGBA':
-                        img = img.convert('RGBA')
-                    
-                    img = img.resize(icon_size, Image.Resampling.LANCZOS)
-                    
-                   
-                    import io
-                    img_bytes = io.BytesIO()
-                    img.save(img_bytes, format='PNG')
-                    img_bytes.seek(0)
-                    
-                   
-                    wx_img = wx.Image(icon_size[0], icon_size[1])
-                    wx_img.LoadFile(img_bytes, wx.BITMAP_TYPE_PNG)
-                    bitmap = wx.Bitmap(wx_img)
-                    
-                    return bitmap
-                except Exception as img_error:
-                    print(f"直接加载图片失败: {img_error}")
-                    logging.error(f"直接加载图片失败: {img_error}")
-        
-       
-        try:
-            import ctypes
-            from ctypes import wintypes
-            
-            class SHFILEINFOW(ctypes.Structure):
-                _fields_ = [
-                    ("hIcon", ctypes.c_void_p),
-                    ("iIcon", ctypes.c_int),
-                    ("dwAttributes", ctypes.c_ulong),
-                    ("szDisplayName", ctypes.c_wchar * 260),
-                    ("szTypeName", ctypes.c_wchar * 80)
-                ]
-            
-            shell32 = ctypes.windll.shell32
-            SHGFI_ICON = 0x100
-            SHGFI_LARGEICON = 0x0
-            
-            shfi = SHFILEINFOW()
-            file_attr = win32con.FILE_ATTRIBUTE_NORMAL
-            if os.path.isdir(file_path):
-                file_attr = win32con.FILE_ATTRIBUTE_DIRECTORY
-            
-            ret = shell32.SHGetFileInfoW(
-                file_path,
-                file_attr,
-                ctypes.byref(shfi),
-                ctypes.sizeof(shfi),
-                SHGFI_ICON | SHGFI_LARGEICON
-            )
-            
-            if not ret or not shfi.hIcon:
-                print("无法获取图标句柄")
-                logging.warning("无法获取图标句柄")
-                return get_fallback_icon(file_path, size)
-            
-          
-            hdc = win32ui.CreateDCFromHandle(win32gui.GetDC(0))
-            hbmp = win32ui.CreateBitmap()
-            hbmp.CreateCompatibleBitmap(hdc, icon_size[0], icon_size[1])
-            hdc = hdc.CreateCompatibleDC()
-            hdc.SelectObject(hbmp)
-            
-            
-            win32gui.DrawIconEx(
-                hdc.GetHandleOutput(),
-                0, 0,
-                shfi.hIcon,
-                icon_size[0], icon_size[1],
-                0, None, 0x0003
-            )
-            
-            if True:
-               
-                bmpinfo = hbmp.GetInfo()
-                bmpstr = hbmp.GetBitmapBits(True)
-                img = Image.frombuffer(
-                    'RGBA',
-                    (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
-                    bmpstr, 'raw', 'BGRA', 0, 1
-                )
-                
-              
-                img = img.resize(icon_size, Image.Resampling.LANCZOS)
-                
-              
-                import io
-                img_bytes = io.BytesIO()
-                img.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
-                
-                wx_img = wx.Image(icon_size[0], icon_size[1])
-                wx_img.LoadFile(img_bytes, wx.BITMAP_TYPE_PNG)
-                bitmap = wx.Bitmap(wx_img)
-         
-        
-            win32gui.DestroyIcon(shfi.hIcon)
-            return bitmap
-            
-        except Exception as sys_error:
-            print(f"系统图标获取失败: {sys_error}")
-            logging.error(f"系统图标获取失败: {sys_error}")
-            return get_fallback_icon(file_path, size)
-            
-    except Exception as e:
-        print(f"图标处理异常: {e}")
-        logging.error(f"图标处理异常: {e}")
-        import traceback
-        traceback.print_exc()
-        return get_fallback_icon(file_path, size)
-
-def get_fallback_icon(file_path, size=16):
-    """备用图标方案"""
-    try:
-       
-        ext = os.path.splitext(file_path)[1].lower()
-        
-      
-        if ext in ['.exe', '.com', '.bat', '.cmd']:
-            return wx.ArtProvider.GetBitmap(wx.ART_EXECUTABLE_FILE, wx.ART_OTHER, (size, size))
-        elif ext in ['.txt', '.log', '.ini', '.conf']:
-            return wx.ArtProvider.GetBitmap(wx.ART_NORMAL_FILE, wx.ART_OTHER, (size, size))
-        elif ext in ['.pdf']:
-            return wx.ArtProvider.GetBitmap(wx.ART_PDF, wx.ART_OTHER, (size, size))
-        elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
-            return wx.ArtProvider.GetBitmap(wx.ART_ZIP, wx.ART_OTHER, (size, size))
-        elif ext in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.ico']:
-            return wx.ArtProvider.GetBitmap(wx.ART_IMAGE, wx.ART_OTHER, (size, size))
-        elif ext in ['.mp3', '.wav', '.flac', '.aac']:
-            return wx.ArtProvider.GetBitmap(wx.ART_MUSIC, wx.ART_OTHER, (size, size))
-        elif ext in ['.mp4', '.avi', '.mkv', '.mov']:
-            return wx.ArtProvider.GetBitmap(wx.ART_VIDEO, wx.ART_OTHER, (size, size))
-        elif ext in ['.doc', '.docx']:
-            return wx.ArtProvider.GetBitmap(wx.ART_DOCUMENT, wx.ART_OTHER, (size, size))
-        elif ext in ['.xls', '.xlsx']:
-            return wx.ArtProvider.GetBitmap(wx.ART_SPREADSHEET, wx.ART_OTHER, (size, size))
-        elif ext in ['.ppt', '.pptx']:
-            return wx.ArtProvider.GetBitmap(wx.ART_PRESENTATION, wx.ART_OTHER, (size, size))
-        elif ext in ['.html', '.htm']:
-            return wx.ArtProvider.GetBitmap(wx.ART_HTML, wx.ART_OTHER, (size, size))
-        else:
-           
-            return wx.ArtProvider.GetBitmap(wx.ART_NORMAL_FILE, wx.ART_OTHER, (size, size))
-            
-    except Exception as e:
-        print(f"获取备用图标失败: {e}")
-        logging.error(f"获取备用图标失败: {e}")
-        return wx.ArtProvider.GetBitmap(wx.ART_NORMAL_FILE, wx.ART_OTHER, (size, size))
 def refresh_download_list(list_ctrl, image_list):
     """刷新下载列表"""
  
@@ -883,7 +768,7 @@ def on_new_download(parent, list_ctrl, image_list):
                 record = add_download_record(url, filename, save_path, "下载中", 0)
                 refresh_download_list(list_ctrl, image_list)
                 
-                # 下载完成回调函数
+              
                 def on_download_completed(success, file_size):
 
                     for idx, item in enumerate(download_history):
@@ -908,7 +793,8 @@ def on_new_download(parent, list_ctrl, image_list):
                 
                 def start_download():
                     try:
-                        wx.CallAfter(download_window, url, filename, save_path, thread_count=thread_count, disable_ssl=True, 
+                        import NewDownloadCore
+                        wx.CallAfter(NewDownloadCore.Download, url,  save_path,filename, Jobs=thread_count, Cache=5,Size=1024*1024, disable_ssl=True, 
                                     completion_callback=on_download_completed)
                     except Exception as e:
     
@@ -1155,24 +1041,19 @@ def on_item_activated(list_ctrl, event):
         record = download_history[selected]
         file_path = os.path.join(record["save_path"], record["filename"])
         
-
         if record.get("url") == "批量下载文件夹":
-
             folder_path = os.path.join(record["save_path"], record["filename"])
             if os.path.exists(folder_path) and os.path.isdir(folder_path):
-                try:
-                    os.startfile(folder_path)
-                except Exception as e:
-                    wx.MessageBox(f"无法打开文件夹: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+                if not open_file_or_folder(folder_path):
+                    wx.MessageBox("无法打开文件夹", "错误", wx.OK | wx.ICON_ERROR)
             else:
                 wx.MessageBox("文件夹不存在", "错误", wx.OK | wx.ICON_ERROR)
         elif os.path.exists(file_path) and record["status"] == "已完成":
-            try:
-                os.startfile(file_path)
-            except Exception as e:
-                wx.MessageBox(f"无法打开文件: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            if not open_file_or_folder(file_path):
+                wx.MessageBox("无法打开文件", "错误", wx.OK | wx.ICON_ERROR)
         else:
             wx.MessageBox("文件不存在或下载未完成", "提示", wx.OK | wx.ICON_INFORMATION)
+
 def on_menu_export(event, list_ctrl):
     """导出选中的下载记录"""
     selected_count = list_ctrl.GetSelectedItemCount()
@@ -1222,11 +1103,8 @@ def on_menu_open(event, list_ctrl):
         file_path = os.path.join(record["save_path"], record["filename"])
         
         if os.path.exists(file_path):
-            try:
-                os.startfile(file_path)
-                
-            except Exception as e:
-                wx.MessageBox(f"无法打开文件: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            if not open_file_or_folder(file_path):
+                wx.MessageBox("无法打开文件", "错误", wx.OK | wx.ICON_ERROR)
         else:
             wx.MessageBox("文件不存在", "错误", wx.OK | wx.ICON_ERROR)
 
@@ -1238,14 +1116,10 @@ def on_menu_open_folder(event, list_ctrl):
         file_path = os.path.join(record["save_path"], record["filename"])
         
         if os.path.exists(file_path):
-            try:
-                os.startfile(record["save_path"])
-                
-            except Exception as e:
-                wx.MessageBox(f"无法打开文件夹: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            if not open_file_or_folder(record["save_path"]):
+                wx.MessageBox("无法打开文件夹", "错误", wx.OK | wx.ICON_ERROR)
         else:
             wx.MessageBox("文件不存在", "错误", wx.OK | wx.ICON_ERROR)
-
 def on_menu_redownload(event, list_ctrl):
     """重新下载"""
     selected = list_ctrl.GetFirstSelected()
