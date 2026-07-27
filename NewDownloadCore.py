@@ -55,6 +55,8 @@ class DownloadCtx:
     run_after: Optional[str]
     disable_ssl: bool
     completion_callback: Optional[Any]
+    uuid: str = "" 
+    speed_unit: str = "MB/s"
     file_total_size: int = 0
     total_downloaded: int = 0
     chunk_task_list: Optional[List[ChunkTask]] = None
@@ -68,7 +70,53 @@ class DownloadCtx:
     ndf_progress_path: str = ""
     ui_frame: Optional[Any] = None
 
-# -------------------------- 底层纯Python文件工具（无任何Windows API） --------------------------
+# --------------------------  --------------------------
+
+try:
+    from DownloadUI import update_download_record_by_uid
+except ImportError:
+
+    def update_download_record_by_uid(uid, **kwargs):
+        pass
+
+
+def format_speed(speed_bps: float, unit: str = "MB/s") -> str:
+    """格式化速度字符串"""
+    unit = unit.upper()
+    
+    if unit == "MB/S":
+
+        if speed_bps < 1000:
+            return f"{speed_bps:.2f} B/s"
+        elif speed_bps < 1000 ** 2:
+            return f"{speed_bps / 1000:.2f} KB/s"
+        else:
+            return f"{speed_bps / (1000**2):.2f} MB/s"
+    
+    elif unit == "MIB/S":
+       
+        if speed_bps < 1024:
+            return f"{speed_bps:.2f} B/s"
+        elif speed_bps < 1024 ** 2:
+            return f"{speed_bps / 1024:.2f} KiB/s"
+        else:
+            return f"{speed_bps / (1024**2):.2f} MiB/s"
+    
+    elif unit == "MBPS":
+        
+        speed_bps = speed_bps * 8  
+        if speed_bps < 1000:
+            return f"{speed_bps:.2f} bps"
+        elif speed_bps < 1000 ** 2:
+            return f"{speed_bps / 1000:.2f} Kbps"
+        else:
+            return f"{speed_bps / (1000**2):.2f} Mbps"
+    
+    else:
+        
+        return format_speed(speed_bps, "MB/s")
+
+
 def pre_allocate_file(file_path: str, total_size: int, resume: bool = False):
     """纯Python预分配完整占位文件，buffering=0禁用缓冲，fsync强制落盘"""
     mode = "r+b" if resume else "wb"
@@ -309,15 +357,16 @@ def ui_push_chunk_progress(ctx: DownloadCtx, chunk_idx: int, downloaded: int, ch
         return
     pct = min(int((downloaded / chunk_total) * 100), 100)
     wx.CallAfter(ctx.ui_frame.update_grid_cell, chunk_idx, pct)
-
 def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
+    """刷新速度面板 - 使用滑动窗口平均算法"""
     if ctx.stop_event.is_set() or ctx.ui_frame is None or ctx.file_total_size == 0:
         return
     
     now_ts = time.time()
     delta_ts = now_ts - ctx.last_speed_calc_ts
     
-    if delta_ts < 0.5:
+    # 增加刷新间隔，避免文本打架
+    if delta_ts < 0.8:  # 从0.5秒增加到0.8秒
         return
     
     with ctx.global_lock:
@@ -325,16 +374,38 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
         ctx.last_total_bytes = ctx.total_downloaded
         ctx.last_speed_calc_ts = now_ts
     
-    # 计算速度（现在是实时速度）
-    speed_bps = delta_bytes / delta_ts
+    # 滑动窗口平均速度（最近8次速度的平均值）
+    if not hasattr(ctx, 'speed_history'):
+        ctx.speed_history = []
     
-    # 格式化速度字符串
-    if speed_bps < 1024:
-        speed_str = f"{speed_bps:.2f} B/s"
-    elif speed_bps < 1024 ** 2:
-        speed_str = f"{speed_bps / 1024:.2f} KB/s"
+    current_speed = delta_bytes / delta_ts if delta_ts > 0 else 0
+    ctx.speed_history.append(current_speed)
+    
+    # 保持最近8个样本（减少内存占用）
+    if len(ctx.speed_history) > 8:
+        ctx.speed_history.pop(0)
+    
+    # 计算平均速度（中位数滤波）
+    valid_speeds = [s for s in ctx.speed_history if s > 0]
+    if valid_speeds:
+        valid_speeds.sort()
+        if len(valid_speeds) % 2 == 0:
+            avg_speed = (valid_speeds[len(valid_speeds)//2 - 1] + valid_speeds[len(valid_speeds)//2]) / 2
+        else:
+            avg_speed = valid_speeds[len(valid_speeds)//2]
     else:
-        speed_str = f"{speed_bps / (1024**2):.2f} MB/s"
+        avg_speed = current_speed
+    
+    # 速度变化限制（最多变化30%，更严格）
+    if hasattr(ctx, 'last_avg_speed') and ctx.last_avg_speed > 0:
+        max_increase = ctx.last_avg_speed * 1.3
+        max_decrease = ctx.last_avg_speed * 0.7
+        avg_speed = max(min(avg_speed, max_increase), max_decrease)
+    
+    ctx.last_avg_speed = avg_speed
+    
+    # 使用配置的速度单位格式化
+    speed_str = format_speed(avg_speed, ctx.speed_unit)
     
     # 计算已耗时
     elapsed_sec = now_ts - ctx.start_ts
@@ -342,13 +413,19 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
     
-    # 计算剩余时间
-    if speed_bps > 0:
+    # 计算剩余时间（平滑处理）
+    if avg_speed > 0:
         remain_bytes = ctx.file_total_size - ctx.total_downloaded
-        remain_sec = remain_bytes / speed_bps
+        remain_sec_raw = remain_bytes / avg_speed
+        remain_sec_raw = max(0, remain_sec_raw)
         
-
-        remain_sec = max(0, remain_sec)
+        if not hasattr(ctx, 'last_remain_sec'):
+            ctx.last_remain_sec = remain_sec_raw
+        else:
+            # alpha=0.2，更平滑
+            ctx.last_remain_sec = 0.2 * remain_sec_raw + 0.8 * ctx.last_remain_sec
+        
+        remain_sec = ctx.last_remain_sec
         
         rh, rrem = divmod(remain_sec, 3600)
         rm, rs = divmod(rrem, 60)
@@ -356,132 +433,130 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     else:
         remain_str = "计算中"
     
-    global_pct = int((ctx.total_downloaded / ctx.file_total_size) * 100)
-    wx.CallAfter(ctx.ui_frame.refresh_speed_info, speed_str, time_str, remain_str, global_pct)
+    global_pct = min(int((ctx.total_downloaded / ctx.file_total_size) * 100), 100)
+    
+    # 使用 CallAfter 但添加防抖
+    if not hasattr(ctx, 'ui_refresh_pending') or not ctx.ui_refresh_pending:
+        ctx.ui_refresh_pending = True
+        def do_refresh():
+            ctx.ui_refresh_pending = False
+            ctx.ui_frame.refresh_speed_info(speed_str, time_str, remain_str, global_pct)
+        wx.CallAfter(do_refresh)
 # -------------------------- 顶层调度核心函数 --------------------------
+
 def schedule_download_task(ctx: DownloadCtx) -> None:
     ctx.start_ts = time.time()
     ctx.last_speed_calc_ts = ctx.start_ts
     ctx.task_queue = Queue(maxsize=len(ctx.chunk_task_list))
+    
     if ctx.file_total_size <= 0:
         ui_push_global_status(ctx, "错误：未获取到文件总大小，无法分片下载")
         ui_push_log(ctx, "服务器未返回content-length，不支持多线程下载")
         if ctx.completion_callback:
-            wx.CallAfter(ctx.completion_callback, False, 0)
+            wx.CallAfter(ctx.completion_callback, False, 0, ctx.uuid)
         return
+    
     for task in ctx.chunk_task_list:
         ctx.task_queue.put(task)
+    
     target_full_path = os.path.join(ctx.save_path, ctx.filename)
     has_resume_data = sum(t.downloaded for t in ctx.chunk_task_list) > 0
+    
     try:
         ctx.file_obj = pre_allocate_file(target_full_path, ctx.file_total_size, resume=has_resume_data)
     except Exception as e:
         ui_push_global_status(ctx, f"文件创建失败: {str(e)}")
         ui_push_log(ctx, f"目标路径：{target_full_path}")
         if ctx.completion_callback:
-            wx.CallAfter(ctx.completion_callback, False, 0)
+            wx.CallAfter(ctx.completion_callback, False, 0, ctx.uuid)
         return
-    ui_push_global_status(ctx, f"{ctx.file_total_size / 1024 / 1024:.2f}MB")
+    
+    ui_push_global_status(ctx, f"{ctx.file_total_size / 1024 / 1024:.2f}MiB")
+    
+    # 启动工作线程
     worker_threads = []
     for _ in range(ctx.jobs):
         t = threading.Thread(target=single_chunk_worker, args=(ctx,), daemon=True)
         worker_threads.append(t)
         t.start()
-
-    timeout = time.time() + 2#等待时间
-    while time.time() < timeout:
+    
+    # 等待所有分片完成或停止事件触发
+    while not ctx.stop_event.is_set():
         all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
         if all_chunk_finished:
             break
-        time.sleep(0.05)
+        ui_refresh_speed_panel(ctx)
+        time.sleep(0.1)
     
-   
+    # 停止UI更新
+    ctx.stop_event.set()
+    
+    # 清理文件对象
     if ctx.file_obj is not None:
         ctx.file_obj.flush()
+        os.fsync(ctx.file_obj.fileno())
         ctx.file_obj.close()
         ctx.file_obj = None
     
-  
+    # 后台清理
     def background_cleanup():
         try:
             ctx.task_queue.join()
             for t in worker_threads:
                 if t.is_alive():
-                    t.join(timeout=1)
+                    t.join(timeout=2)
             dump_progress_json(ctx)
         except Exception as e:
             ui_push_log(ctx, f"后台清理失败: {str(e)}")
     
     threading.Thread(target=background_cleanup, daemon=True).start()
     
+    # 文件完整性校验
     final_file_size = os.path.getsize(target_full_path) if os.path.exists(target_full_path) else 0
+    all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
     file_complete = (final_file_size == ctx.file_total_size)
-    
-
     binary_valid = True
-    if file_complete:
+    
+    if file_complete and final_file_size > 0:
         try:
             with open(target_full_path, "rb") as f:
-                head = f.read(64)
-                if all(b == 0 for b in head):
-                    binary_valid = False
-        except Exception:
-            binary_valid = False
-  
-    def background_cleanup():
-        try:
-            ctx.task_queue.join()
-            for t in worker_threads:
-                if t.is_alive():
-                    t.join(timeout=1)
-            dump_progress_json(ctx)
+                check_size = min(1024, final_file_size)
+                head = f.read(check_size)
+                
+                if final_file_size > check_size:
+                    f.seek(-check_size, os.SEEK_END)
+                    tail = f.read(check_size)
+                    if all(b == 0 for b in head) and all(b == 0 for b in tail):
+                        binary_valid = False
+                else:
+                    if all(b == 0 for b in head):
+                        binary_valid = False
         except Exception as e:
-            ui_push_log(ctx, f"后台清理失败: {str(e)}")
+            ui_push_log(ctx, f"文件校验警告: {str(e)}")
     
-    threading.Thread(target=background_cleanup, daemon=True).start()
-    
-    final_file_size = os.path.getsize(target_full_path) if os.path.exists(target_full_path) else 0
-    all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
-    file_complete = (final_file_size == ctx.file_total_size)
-
-    binary_valid = True
-    if file_complete:
-        try:
-            with open(target_full_path, "rb") as f:
-                head = f.read(64)
-                if all(b == 0 for b in head):
-                    binary_valid = False
-        except Exception:
-            binary_valid = False
-    final_file_size = os.path.getsize(target_full_path) if os.path.exists(target_full_path) else 0
-    all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
-    file_complete = (final_file_size == ctx.file_total_size)
-    binary_valid = True
-    if file_complete:
-        try:
-            with open(target_full_path, "rb") as f:
-                head = f.read(1024)
-                f.seek(-1024, os.SEEK_END)
-                tail = f.read(1024)
-                if all(b == 0 for b in head) and all(b == 0 for b in tail):
-                    binary_valid = False
-        except Exception:
-            binary_valid = False
     time_cost_sec = time.time() - ctx.start_ts
     h, rem = divmod(time_cost_sec, 3600)
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
-    if all_chunk_finished and file_complete and binary_valid and not ctx.stop_event.is_set():
+    
+    # 下载成功
+    if all_chunk_finished and file_complete and binary_valid:
         ui_push_global_status(ctx, "全部分片下载完成，磁盘文件校验通过")
         ui_push_log(ctx, f"下载完成，文件完整，大小：{final_file_size}字节")
+        
         if ctx.run_after == "Open":
-            os.startfile(target_full_path)
+            try:
+                os.startfile(target_full_path)
+            except:
+                pass
         elif ctx.run_after == "Shutdown":
             ui_push_log(ctx, "10秒后执行关机，可关闭窗口取消")
             time.sleep(10)
             os.system("shutdown /s /t 0")
         
-
+        if ctx.uuid:
+            update_download_record_by_uid(ctx.uuid, status="已完成", file_size=final_file_size)
+        
         download_result = {
             'success': True,
             'file_size': final_file_size,
@@ -492,7 +567,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         }
         
         if ctx.completion_callback:
-            wx.CallAfter(ctx.completion_callback, True, final_file_size, download_result)
+            wx.CallAfter(ctx.completion_callback, True, final_file_size, ctx.uuid)
         
         avg_speed = final_file_size / time_cost_sec if time_cost_sec > 0 else 0
         
@@ -506,11 +581,12 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
                 time_cost=time_str,
                 average_speed=avg_speed
             )
-  
             if ctx.ui_frame:
                 ctx.ui_frame.Close()
         
         wx.CallAfter(show_complete_dialog_and_close)
+    
+    # 下载失败或中断
     elif not ctx.stop_event.is_set():
         if not file_complete or not binary_valid:
             ui_push_global_status(ctx, "警告：分片显示完成，但磁盘文件数据缺失/损坏！")
@@ -519,8 +595,13 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         else:
             ui_push_global_status(ctx, "下载中断，存在未完成分片，支持续传")
             ui_push_log(ctx, f"已保存断点文件：{ctx.ndf_progress_path}")
+        
+        if ctx.uuid:
+            update_download_record_by_uid(ctx.uuid, status="失败：下载中断", file_size=final_file_size)
+        
         if ctx.completion_callback:
-            wx.CallAfter(ctx.completion_callback, False, final_file_size)
+            wx.CallAfter(ctx.completion_callback, False, final_file_size, ctx.uuid)
+    
     ui_push_global_status(ctx, "调度线程退出")
 
 # -------------------------- 初始化下载上下文 --------------------------
@@ -535,7 +616,9 @@ def init_download_context(
     run_after: str = None,
     disable_ssl: bool = False,
     completion_callback = None,
-    resume_json_path: str = ""
+    resume_json_path: str = "",
+    uuid: str = "",
+    speed_unit: str = "MB/s"
 ) -> DownloadCtx:
     ctx = DownloadCtx(
         url=url,
@@ -548,6 +631,8 @@ def init_download_context(
         run_after=run_after,
         disable_ssl=disable_ssl,
         completion_callback=completion_callback,
+        uuid=uuid, 
+        speed_unit=speed_unit,
         stop_event=threading.Event(),
         global_lock=threading.Lock()
     )
@@ -650,16 +735,18 @@ class DownloadFrame(wx.Frame):
         self.status_label = wx.StaticText(self.panel, label="准备初始化下载...")
         top_box.Add(self.status_label, proportion=0)
         main_vbox.Add(top_box, flag=wx.EXPAND | wx.ALL, border=8)
-        
 
         speed_box = wx.BoxSizer(wx.HORIZONTAL)
+
+        
         self.speed_text = wx.StaticText(self.panel, label="总速度: 0 B/s")
+        self.speed_text.SetMinSize((150, -1))
         self.elapsed_text = wx.StaticText(self.panel, label="已耗时: 00:00:00")
         self.remain_text = wx.StaticText(self.panel, label="预计剩余: --")
-        speed_box.Add(self.speed_text, flag=wx.RIGHT, border=15)
+        speed_box.Add(self.speed_text, flag=wx.RIGHT, border=20)
         speed_box.Add(self.elapsed_text, flag=wx.RIGHT, border=15)
         speed_box.Add(self.remain_text)
-        main_vbox.Add(speed_box, flag=wx.LEFT | wx.BOTTOM, border=8)
+        main_vbox.Add(speed_box, flag=wx.LEFT | wx.BOTTOM, border=10)
         
    
         self.grid_scroll = wx.ScrolledWindow(self.panel, style=wx.VSCROLL | wx.HSCROLL)
@@ -829,6 +916,7 @@ class DownloadFrame(wx.Frame):
         download_thread.start()
 # -------------------------- 对外唯一入口函数 Download --------------------------
 def Download(
+    uuid: str,
     URL: str,                    # 文件下载链接
     SavePath: str,               # 文件保存目录
     FileName: str,               # 输出文件名（带后缀）
@@ -839,7 +927,8 @@ def Download(
     Run: str = None,             # 完成动作 Open / Shutdown
     disable_ssl: bool = False,   # 关闭SSL校验
     completion_callback = None,  # 完成回调(success:bool, size:int)
-    ResumePath: str = ""         # 断点续传JSON路径
+    ResumePath: str = ""  ,       # 断点续传JSON路径
+     SpeedUnit: str = "MB/s"
 ):
     os.makedirs(SavePath, exist_ok=True)
     if Jobs > 128:
@@ -858,7 +947,9 @@ def Download(
         run_after=Run,
         disable_ssl=disable_ssl,
         completion_callback=completion_callback,
-        resume_json_path=ResumePath
+        resume_json_path=ResumePath,
+        uuid=uuid,
+        speed_unit=SpeedUnit
     )
     app = wx.App(False)
     DownloadFrame(ctx=download_ctx)
@@ -866,20 +957,22 @@ def Download(
 
 # -------------------------- 测试入口 --------------------------
 if __name__ == "__main__":
-    test_url = "https://zip1.webgetstore.com/2025/03/08/1b619c17e8ff2f99d8ef3cbf09bfd53e.rar?sg=af5253823f800727b0525244ae89eb30&e=6a5e35e8&fileName=AdvancedNetworkToolset_3.5.1.3.rar&fi=226787205"
+    test_url = "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.32/release/c390e792/QQ_3.2.31_260710_amd64_01.deb"
     test_save = "/home/yujy/下载"
     test_name = "1.rar"
     custom_header = {
         "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
     }
     Download(
+        uuid="11",
         URL=test_url,
         SavePath=test_save,
         FileName=test_name,
-        Jobs=14,
+        Jobs=18,
         Size=1024*1024,
         Head=custom_header,
         Cache=10,
         Run=None,
-        disable_ssl=True
+        disable_ssl=True,
+        SpeedUnit="Mbps"
     )

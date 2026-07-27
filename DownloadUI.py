@@ -606,7 +606,7 @@ def on_new_download(parent, list_ctrl, image_list):
 
     thread_sizer = wx.BoxSizer(wx.HORIZONTAL)
     thread_label = wx.StaticText(single_panel, label="线程数 (1-1024):")
-    thread_count_spin = wx.SpinCtrl(single_panel, min=1, max=1024, initial=4, size=(100, -1))
+    thread_count_spin = wx.SpinCtrl(single_panel, min=1, max=1024, initial=4, size=(150, -1))
     thread_sizer.Add(thread_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     thread_sizer.Add(thread_count_spin, 0, wx.ALL, 5)
     single_sizer.Add(thread_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -793,11 +793,17 @@ def on_new_download(parent, list_ctrl, image_list):
                 
                 def start_download():
                     try:
+                        # 生成UUID
+                        record = add_download_record(url, filename, save_path, "下载中", 0)
+                        record_uuid = record["uuid"]  
+                        
                         import NewDownloadCore
-                        wx.CallAfter(NewDownloadCore.Download, url,  save_path,filename, Jobs=thread_count, Cache=5,Size=1024*1024, disable_ssl=True, 
-                                    completion_callback=on_download_completed)
+                   
+                        wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename, 
+                                    Jobs=thread_count, Cache=5, Size=1024*1024, 
+                                    disable_ssl=True, completion_callback=on_download_completed)
                     except Exception as e:
-    
+                        # 查找记录并更新状态
                         for idx, item in enumerate(download_history):
                             if (item["url"] == url and 
                                 item["filename"] == filename and 

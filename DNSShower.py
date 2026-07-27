@@ -23,14 +23,14 @@ def flush_dns_cache():
     if sys_type == "Windows":
         subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
     elif sys_type == "Linux":
-        # Linux 刷新 DNS 缓存的几种方式
+        # Linux 刷新 DNS
         try:
             subprocess.run(['systemd-resolve', '--flush-caches'], capture_output=True)
         except FileNotFoundError:
             try:
                 subprocess.run(['nscd', '-i', 'hosts'], capture_output=True)
             except FileNotFoundError:
-                pass  # 某些系统可能没有这些命令
+                pass  
     elif sys_type == "Darwin":
         subprocess.run(['dscacheutil', '-flushcache'], capture_output=True)
 
@@ -293,7 +293,7 @@ def init_dns_tab(p):
         if sys_type == "Windows":
             return get_dns_cache_windows()
         else:
-            # Linux/macOS 获取DNS缓存比较复杂，返回提示信息
+            # Linux
             return "DNS缓存查看功能仅在Windows系统上可用"
 
     def parse_dns_cache(output):
