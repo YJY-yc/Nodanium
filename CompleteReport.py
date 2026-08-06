@@ -19,19 +19,20 @@ class DownloadCompleteReport(wx.Dialog):
                  save_path: str, 
                  file_size: int, 
                  time_cost: str,
-                 average_speed: float):
+                 average_speed: float,
+                 speed_unit: str = "MB/s"): 
         super().__init__(parent, title="下载完成", size=(450, 380), style=wx.DEFAULT_DIALOG_STYLE)
         
         self.filename = filename
         self.save_path = save_path
         self.full_path = os.path.join(save_path, filename)
-        
-        # 检测操作系统
+        self.speed_unit = speed_unit
+  
         self.os_type = platform.system()
         self.is_linux = self.os_type == "Linux"
         self.is_windows = self.os_type == "Windows"
         
-        # 初始化拖拽相关
+    
         self.drop_target = FileDropTarget(self)
         self.SetDropTarget(self.drop_target)
         
@@ -43,7 +44,7 @@ class DownloadCompleteReport(wx.Dialog):
         """创建UI布局"""
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # 标题区域
+    
         title_text = wx.StaticText(self, label="下载完成")
         title_font = wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
         title_text.SetFont(title_font)
@@ -170,7 +171,7 @@ class DownloadCompleteReport(wx.Dialog):
         """设置数据显示"""
         self.size_value.SetLabel(self._format_size(file_size))
         self.time_value.SetLabel(time_cost)
-        self.speed_value.SetLabel(self._format_speed(average_speed))
+        self.speed_value.SetLabel(self._format_speed(average_speed, self.speed_unit))
         
     def _format_size(self, size_bytes: int) -> str:
         """格式化文件大小"""
@@ -183,14 +184,40 @@ class DownloadCompleteReport(wx.Dialog):
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.2f} GiB"
         
-    def _format_speed(self, speed_bps: float) -> str:
+    def _format_speed(self, speed_bps: float, unit: str = "MB/s") -> str:
         """格式化速度"""
-        if speed_bps < 1024:
-            return f"{speed_bps:.2f} B/s"
-        elif speed_bps < 1024 * 1024:
-            return f"{speed_bps / 1024:.2f} KiB/s"
+        unit = unit.upper()
+        
+        if unit == "MB/S":
+          
+            if speed_bps < 1000:
+                return f"{speed_bps:.2f} B/s"
+            elif speed_bps < 1000 ** 2:
+                return f"{speed_bps / 1000:.2f} KB/s"
+            else:
+                return f"{speed_bps / (1000**2):.2f} MB/s"
+        
+        elif unit == "MIB/S":
+        
+            if speed_bps < 1024:
+                return f"{speed_bps:.2f} B/s"
+            elif speed_bps < 1024 * 1024:
+                return f"{speed_bps / 1024:.2f} KiB/s"
+            else:
+                return f"{speed_bps / (1024 * 1024):.2f} MiB/s"
+        
+        elif unit == "MBPS":
+   
+            speed_bps = speed_bps * 8
+            if speed_bps < 1000:
+                return f"{speed_bps:.2f} bps"
+            elif speed_bps < 1000 ** 2:
+                return f"{speed_bps / 1000:.2f} Kbps"
+            else:
+                return f"{speed_bps / (1000**2):.2f} Mbps"
+        
         else:
-            return f"{speed_bps / (1024 * 1024):.2f} MiB/s"
+            return self._format_speed(speed_bps, "MB/s")
     
     def _open_file_with_default_app(self, path: str):
         """跨平台打开文件/文件夹"""
@@ -308,10 +335,9 @@ class FileDropTarget(wx.DropTarget):
                 
         return True
 
-
-def show_download_complete_report(parent, filename, save_path, file_size, time_cost, average_speed):
+def show_download_complete_report(parent, filename, save_path, file_size, time_cost, average_speed, speed_unit="MB/s"):
     """显示下载完成报告窗口"""
-    dlg = DownloadCompleteReport(parent, filename, save_path, file_size, time_cost, average_speed)
+    dlg = DownloadCompleteReport(parent, filename, save_path, file_size, time_cost, average_speed, speed_unit)
     dlg.ShowModal()
     dlg.Destroy()
 

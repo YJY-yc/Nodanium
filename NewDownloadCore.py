@@ -73,12 +73,11 @@ class DownloadCtx:
 # --------------------------  --------------------------
 
 try:
-    from DownloadUI import update_download_record_by_uid
+    from DownloadUI import update_download_record_by_uuid
 except ImportError:
 
-    def update_download_record_by_uid(uid, **kwargs):
+    def update_download_record_by_uuid(uuid, **kwargs):
         pass
-
 
 def format_speed(speed_bps: float, unit: str = "MB/s") -> str:
     """格式化速度字符串"""
@@ -539,7 +538,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
     
-    # 下载成功
+  
     if all_chunk_finished and file_complete and binary_valid:
         ui_push_global_status(ctx, "全部分片下载完成，磁盘文件校验通过")
         ui_push_log(ctx, f"下载完成，文件完整，大小：{final_file_size}字节")
@@ -555,7 +554,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             os.system("shutdown /s /t 0")
         
         if ctx.uuid:
-            update_download_record_by_uid(ctx.uuid, status="已完成", file_size=final_file_size)
+            update_download_record_by_uuid(ctx.uuid, status="已完成", file_size=final_file_size)
         
         download_result = {
             'success': True,
@@ -565,7 +564,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             'time_cost': time_str,
             'threads': ctx.jobs
         }
-        
+
         if ctx.completion_callback:
             wx.CallAfter(ctx.completion_callback, True, final_file_size, ctx.uuid)
         
@@ -579,7 +578,8 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
                 save_path=ctx.save_path,
                 file_size=final_file_size,
                 time_cost=time_str,
-                average_speed=avg_speed
+                average_speed=avg_speed,
+                speed_unit=ctx.speed_unit 
             )
             if ctx.ui_frame:
                 ctx.ui_frame.Close()
@@ -597,8 +597,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             ui_push_log(ctx, f"已保存断点文件：{ctx.ndf_progress_path}")
         
         if ctx.uuid:
-            update_download_record_by_uid(ctx.uuid, status="失败：下载中断", file_size=final_file_size)
-        
+            update_download_record_by_uuid(ctx.uuid, status="失败：下载中断", file_size=final_file_size)
         if ctx.completion_callback:
             wx.CallAfter(ctx.completion_callback, False, final_file_size, ctx.uuid)
     

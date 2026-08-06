@@ -116,10 +116,18 @@ def update_download_record_by_uuid(uuid, **kwargs):
     for record in download_history:
         if record.get("uuid") == uuid:
             for key, value in kwargs.items():
-                if key in record:
-                    record[key] = value
+                record[key] = value
             save_download_history()
             logging.info(f"成功修改UUID为 {uuid} 的下载记录")
+            return True
+   
+    load_download_history()
+    for record in download_history:
+        if record.get("uuid") == uuid:
+            for key, value in kwargs.items():
+                record[key] = value
+            save_download_history()
+            logging.info(f"重新加载后成功修改UUID为 {uuid} 的下载记录")
             return True
     logging.warning(f"未找到UUID为 {uuid} 的下载记录")
     return False
@@ -172,7 +180,7 @@ def add_download_record(url, filename, save_path, status="已完成", file_size=
 def refresh_download_list(list_ctrl, image_list):
     """刷新下载列表"""
  
-    load_download_history()
+    
     
     list_ctrl.DeleteAllItems()
     image_list.RemoveAll()
@@ -764,46 +772,37 @@ def on_new_download(parent, list_ctrl, image_list):
                         return
                     msg_dlg.Destroy()
                 
-     
-                record = add_download_record(url, filename, save_path, "下载中", 0)
-                refresh_download_list(list_ctrl, image_list)
+
                 
               
-                def on_download_completed(success, file_size):
-
-                    for idx, item in enumerate(download_history):
-                        if (item["url"] == url and 
-                            item["filename"] == filename and 
-                            item["save_path"] == save_path and 
-                            item["status"] == "下载中"):
-                            if success:
-                                item["status"] = "已完成"
-                                item["file_size"] = file_size
-                            else:
-                                if file_size > 0:
-                        
-                                    item["status"] = "部分完成"
-                                    item["file_size"] = file_size
-                                else:
-                                    item["status"] = "失败"
-                            break
+                def on_download_completed(success, file_size, uuid=None):
     
-                    save_download_history()
+                    if uuid:
+                        if success:
+                            update_download_record_by_uuid(uuid, status="已完成", file_size=file_size)
+                        else:
+                            if file_size > 0:
+                                update_download_record_by_uuid(uuid, status="部分完成", file_size=file_size)
+                            else:
+                                update_download_record_by_uuid(uuid, status="失败")
+                    # 刷新列表显示
                     wx.CallAfter(refresh_download_list, list_ctrl, image_list)
                 
                 def start_download():
                     try:
-                        # 生成UUID
+                    
                         record = add_download_record(url, filename, save_path, "下载中", 0)
                         record_uuid = record["uuid"]  
+                        # 立即刷新列表显示新记录
+                        wx.CallAfter(refresh_download_list, list_ctrl, image_list)
                         
                         import NewDownloadCore
-                   
+                
                         wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename, 
                                     Jobs=thread_count, Cache=5, Size=1024*1024, 
                                     disable_ssl=True, completion_callback=on_download_completed)
                     except Exception as e:
-                        # 查找记录并更新状态
+                    
                         for idx, item in enumerate(download_history):
                             if (item["url"] == url and 
                                 item["filename"] == filename and 
