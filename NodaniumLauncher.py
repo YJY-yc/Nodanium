@@ -23,6 +23,11 @@ def print_help():
   -h, --help              显示此帮助信息
   -c, --clear             清除数据目录
   -s, --silent            静默模式启动
+  -r, --resume=<路径>     从 NDF/JSON 文件恢复下载
+    --path=<保存路径>      覆盖保存目录（可选）
+    --job=<线程数>         覆盖线程数（可选，0使用原设置）
+    --cache=<缓存MB>      覆盖缓存大小（可选，0使用默认32MB）
+    --header=<JSON头>     覆盖HTTP请求头（可选）
   --download              命令行下载模式
     --url=<链接>          下载链接
     --filename=<文件名>    保存文件名
@@ -45,6 +50,202 @@ def print_help():
 
     print(help_text)
 
+
+def _show_resume_dialog(ndf_path, parsed_args):
+    """恢复下载对话框"""
+    import tempfile
+    import zipfile
+    import json
+
+    app = wx.GetApp()
+    if app is None:
+        app = wx.App(False)
+
+    progress_data = {}
+    extracted_dir = ""
+    is_ndf = ndf_path.lower().endswith('.ndf')
+
+    if is_ndf:
+        if not os.path.exists(ndf_path):
+            wx.MessageBox(f"NDF 文件不存在: {ndf_path}", "错误", wx.OK | wx.ICON_ERROR)
+            return False
+        extracted_dir = tempfile.mkdtemp(prefix="ndf_resume_")
+        try:
+            with zipfile.ZipFile(ndf_path, 'r') as zf:
+                zf.extractall(extracted_dir)
+            json_path = os.path.join(extracted_dir, "download_progress.json")
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    progress_data = json.load(f)
+        except Exception as e:
+            wx.MessageBox(f"NDF 文件解析失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            import shutil
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+            return False
+    elif ndf_path.lower().endswith('.json'):
+        if not os.path.exists(ndf_path):
+            wx.MessageBox(f"进度文件不存在: {ndf_path}", "错误", wx.OK | wx.ICON_ERROR)
+            return False
+        try:
+            with open(ndf_path, 'r', encoding='utf-8') as f:
+                progress_data = json.load(f)
+        except Exception as e:
+            wx.MessageBox(f"进度文件解析失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            return False
+    else:
+        wx.MessageBox("无效的文件类型，请使用 .ndf 或 .json 文件", "错误", wx.OK | wx.ICON_ERROR)
+        return False
+
+    if not progress_data or "url" not in progress_data:
+        wx.MessageBox("进度文件损坏或缺少必要信息", "错误", wx.OK | wx.ICON_ERROR)
+        if extracted_dir and os.path.exists(extracted_dir):
+            import shutil
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        return False
+
+    filename = progress_data.get("filename", "未知")
+    url = progress_data.get("url", "")
+    original_save_path = progress_data.get("save_path", "")
+    file_total_size = progress_data.get("file_total_size", 0)
+    total_downloaded = progress_data.get("total_downloaded", 0)
+    jobs = progress_data.get("jobs", 8)
+    chunk_size = progress_data.get("chunk_size", 10 * 1024 * 1024)
+
+    completed_pct = (total_downloaded / file_total_size * 100) if file_total_size > 0 else 0
+
+    dlg = wx.Dialog(None, title="恢复下载", size=(600, 560))
+
+    main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+    info_box = wx.StaticBoxSizer(wx.VERTICAL, dlg, "下载信息")
+    info_grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=8)
+    info_grid.AddGrowableCol(1, proportion=1)
+
+    info_grid.Add(wx.StaticText(dlg, label="文件名:"), flag=wx.ALIGN_RIGHT)
+    info_grid.Add(wx.StaticText(dlg, label=filename), flag=wx.EXPAND, proportion=1)
+
+    info_grid.Add(wx.StaticText(dlg, label="下载链接:"), flag=wx.ALIGN_RIGHT)
+    url_ctrl = wx.TextCtrl(dlg, value=url, style=wx.TE_READONLY | wx.TE_MULTILINE | wx.HSCROLL)
+    url_ctrl.SetFont(wx.Font(7, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+    url_ctrl.SetMinSize((-1, 48))
+    info_grid.Add(url_ctrl, flag=wx.EXPAND, proportion=1)
+
+    size_str = f"{file_total_size / 1024 / 1024:.2f} MiB" if file_total_size > 0 else "未知"
+    info_grid.Add(wx.StaticText(dlg, label="文件大小:"), flag=wx.ALIGN_RIGHT)
+    info_grid.Add(wx.StaticText(dlg, label=size_str), flag=wx.EXPAND, proportion=1)
+
+    info_grid.Add(wx.StaticText(dlg, label="已下载:"), flag=wx.ALIGN_RIGHT)
+    info_grid.Add(wx.StaticText(dlg, label=f"{completed_pct:.1f}%"), flag=wx.EXPAND, proportion=1)
+
+    info_grid.Add(wx.StaticText(dlg, label="原始线程:"), flag=wx.ALIGN_RIGHT)
+    info_grid.Add(wx.StaticText(dlg, label=str(jobs)), flag=wx.EXPAND, proportion=1)
+
+    info_box.Add(info_grid, flag=wx.EXPAND | wx.ALL, border=10)
+    main_sizer.Add(info_box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+    param_box = wx.StaticBoxSizer(wx.VERTICAL, dlg, "参数")
+    param_grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=8)
+    param_grid.AddGrowableCol(1, proportion=1)
+
+    param_grid.Add(wx.StaticText(dlg, label="保存路径:"), flag=wx.ALIGN_RIGHT)
+    path_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    default_save = parsed_args.get("path", "") or original_save_path or os.path.dirname(os.path.abspath(ndf_path))
+    txt_path = wx.TextCtrl(dlg, value=default_save, size=(-1, -1))
+    btn_browse = wx.Button(dlg, label="浏览...", size=(-1, -1))
+    path_sizer.Add(txt_path, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
+    path_sizer.Add(btn_browse, flag=wx.ALIGN_CENTER_VERTICAL)
+    param_grid.Add(path_sizer, flag=wx.EXPAND, proportion=1)
+
+    param_grid.Add(wx.StaticText(dlg, label="线程数:"), flag=wx.ALIGN_RIGHT)
+    txt_job = wx.TextCtrl(dlg, value=parsed_args.get("job", "8"), size=(-1, -1))
+    param_grid.Add(txt_job, flag=wx.EXPAND, proportion=1)
+
+    param_grid.Add(wx.StaticText(dlg, label="缓存(MB):"), flag=wx.ALIGN_RIGHT)
+    txt_cache = wx.TextCtrl(dlg, value=parsed_args.get("cache", "10"), size=(-1, -1))
+    param_grid.Add(txt_cache, flag=wx.EXPAND, proportion=1)
+
+    param_grid.Add(wx.StaticText(dlg, label="HTTP头(JSON):"), flag=wx.ALIGN_RIGHT)
+    txt_header = wx.TextCtrl(dlg, value=parsed_args.get("header", ""), size=(-1, -1))
+    param_grid.Add(txt_header, flag=wx.EXPAND, proportion=1)
+
+    param_box.Add(param_grid, flag=wx.EXPAND | wx.ALL, border=10)
+    main_sizer.Add(param_box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=10)
+
+    btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    btn_start = wx.Button(dlg, label="开始恢复(&S)")
+    btn_cancel = wx.Button(dlg, label="取消(&C)")
+    btn_sizer.Add(btn_start, flag=wx.RIGHT, border=10)
+    btn_sizer.Add(btn_cancel)
+    main_sizer.Add(btn_sizer, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
+
+    dlg.SetSizer(main_sizer)
+    dlg.Center()
+
+    def on_browse(event):
+        dlg_browse = wx.DirDialog(dlg, "选择保存目录", txt_path.GetValue(), style=wx.DD_DEFAULT_STYLE | wx.DD_NEW_DIR_BUTTON)
+        if dlg_browse.ShowModal() == wx.ID_OK:
+            txt_path.SetValue(dlg_browse.GetPath())
+        dlg_browse.Destroy()
+
+    btn_browse.Bind(wx.EVT_BUTTON, on_browse)
+
+    result = {"start": False, "params": {}}
+
+    def on_start(event):
+        save_path = txt_path.GetValue().strip()
+        job_val = int(txt_job.GetValue().strip() or "0")
+        cache_val = float(txt_cache.GetValue().strip() or "0")
+        header_str = txt_header.GetValue().strip()
+
+        if not save_path:
+            wx.MessageBox("保存路径不能为空", "错误", wx.OK | wx.ICON_ERROR)
+            return
+
+        headers = {}
+        if header_str:
+            try:
+                headers = json.loads(header_str)
+            except Exception:
+                headers = {header_str: "true"}
+
+        result["start"] = True
+        result["params"] = {
+            "SavePath": save_path,
+            "Jobs": job_val,
+            "Cache": cache_val,
+            "Head": headers if headers else None,
+        }
+        dlg.EndModal(wx.ID_OK)
+
+    def on_cancel(event):
+        result["start"] = False
+        dlg.EndModal(wx.ID_CANCEL)
+
+    btn_start.Bind(wx.EVT_BUTTON, on_start)
+    btn_cancel.Bind(wx.EVT_BUTTON, on_cancel)
+
+    dlg.ShowModal()
+    dlg.Destroy()
+
+    if not result["start"]:
+        if extracted_dir and os.path.exists(extracted_dir):
+            import shutil
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        return False
+
+    import NewDownloadCore
+    NewDownloadCore.ResumeDownload(
+        ResumePath=ndf_path,
+        SavePath=result["params"]["SavePath"],
+        InputPath=result["params"]["SavePath"],
+        Jobs=result["params"]["Jobs"],
+        Cache=result["params"]["Cache"],
+        Head=result["params"]["Head"],
+        uuid=parsed_args.get("uuid", ""),
+        SpeedUnit=parsed_args.get("speed_unit", "MB/s"),
+    )
+    return True
+
 def parse_args(args):
     parsed = {}
     i = 0
@@ -56,8 +257,12 @@ def parse_args(args):
                 parsed[key[2:]] = value
             else:
                 parsed[arg[2:]] = True
-        elif arg.startswith('-'):
-            parsed[arg[1:]] = True
+        elif arg.startswith('-') and len(arg) > 1:
+            if i + 1 < len(args) and not args[i + 1].startswith('-'):
+                parsed[arg[1:]] = args[i + 1]
+                i += 1
+            else:
+                parsed[arg[1:]] = True
         i += 1
     return parsed
 
@@ -65,8 +270,19 @@ if len(sys.argv) > 1:
     args = sys.argv[1:]
     parsed_args = parse_args(args)
     
+    
+    positional_files = [a for a in args if not a.startswith('-')]
+    ndf_file_arg = None
+    for pf in positional_files:
+        if pf.lower().endswith('.ndf') or pf.lower().endswith('.json'):
+            ndf_file_arg = pf
+            break
+    
+    if ndf_file_arg and "r" not in parsed_args and "resume" not in parsed_args:
+        parsed_args["resume"] = ndf_file_arg
+    
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.5.2.9\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 3.6.0.0\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()
@@ -91,6 +307,14 @@ if len(sys.argv) > 1:
             except Exception as e:
                 print(f"清除数据目录失败: {str(e)}")
         sys.exit(0)
+    elif "r" in parsed_args or "resume" in parsed_args:
+        resume_path = parsed_args.get("r") or parsed_args.get("resume")
+        if not resume_path or resume_path is True:
+            print("错误: --resume 需要指定文件路径")
+            print("使用 --help 查看帮助")
+            sys.exit(1)
+        success = _show_resume_dialog(resume_path, parsed_args)
+        sys.exit(0 if success else 1)
     elif "download" in parsed_args:
         import NewDownloadCore
         
@@ -147,7 +371,7 @@ else:
 
 
 
-# 数据目录配置
+
 target_folder = ""
 
 if sys_type == "Windows":
@@ -209,7 +433,7 @@ if not os.path.exists(target_folder):
         os.makedirs(logs_folder)
         show_notification("初始化完成\n请在首选项中设置请求头", f"数据目录已创建：{target_folder}")
 
-# 创建默认下载目录配置
+
 dir_file = os.path.join(target_folder, "dir.txt")
 if not os.path.exists(dir_file):
     default_download_dir = ""

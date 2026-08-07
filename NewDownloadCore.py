@@ -12,6 +12,7 @@ import gc
 import json
 import zipfile
 import shutil
+import tempfile
 from io import BytesIO
 import urllib3
 import ssl
@@ -23,7 +24,7 @@ from typing import List, Dict, Tuple, Optional, Any
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# 全局常量
+
 DEFAULT_TIMEOUT = 240
 DEFAULT_RETRY = 100 #重试次数
 GRID_CELL_SIZE = 12
@@ -37,10 +38,10 @@ class ChunkTask:
     chunk_idx: int                  # 分片索引
     start_byte: int                 # 分片起始偏移
     end_byte: int                   # 分片结束偏移
-    finished: bool = False          # 是否下载完成
-    downloaded: int = 0             # 当前分片已下载字节(内存统计)
-    task_buffer: Optional[BytesIO] = None  # 分片独立内存缓冲
-    chunk_lock: Optional[threading.Lock] = None  # 分片专属写入锁
+    finished: bool = False          # 是否完成
+    downloaded: int = 0             # 已下载
+    task_buffer: Optional[BytesIO] = None  #内存缓冲
+    chunk_lock: Optional[threading.Lock] = None  # 分片写入锁
 
 @dataclass
 class DownloadCtx:
@@ -63,12 +64,16 @@ class DownloadCtx:
     task_queue: Optional[Queue] = None
     stop_event: Optional[threading.Event] = None
     global_lock: Optional[threading.Lock] = None
-    file_obj: Optional[Any] = None   # 标准文件对象，替代win32句柄
+    file_obj: Optional[Any] = None   # 标准文件对象
     last_speed_calc_ts: float = 0.0
     last_total_bytes: int = 0
     start_ts: float = 0.0
     ndf_progress_path: str = ""
     ui_frame: Optional[Any] = None
+    original_ndf_path: str = ""
+    ndf_extracted_dir: str = ""
+    download_completed: bool = False
+    _completion_handled: bool = False
 
 # --------------------------  --------------------------
 
@@ -223,7 +228,7 @@ def import_ndf(ndf_file_path: str, target_save_dir: str) -> Tuple[bool, Dict[str
     progress_data = load_progress_json(json_path)
     return True, progress_data
 
-# -------------------------- 分片拆分函数（无递归死循环） --------------------------
+# --------------------------  --------------------------
 def split_file_chunks(total_size: int, jobs: int, single_chunk_bytes: int) -> List[ChunkTask]:
     chunk_list = []
     if total_size <= 0:
@@ -264,7 +269,7 @@ def split_file_chunks(total_size: int, jobs: int, single_chunk_bytes: int) -> Li
             idx += 1
     return chunk_list
 
-# -------------------------- 网络分片工作线程 --------------------------
+# -------------------------- 网络分片--------------------------
 def single_chunk_worker(ctx: DownloadCtx) -> None:
     max_cache_bytes = int(ctx.cache_mb * 1024 * 1024)
     session = requests.Session()
@@ -306,7 +311,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                     data_len = len(raw_data)
                     task.downloaded += data_len
                     
-                    # 关键修复：实时更新 total_downloaded
+     
                     with ctx.global_lock:
                         ctx.total_downloaded += data_len
                     
@@ -327,20 +332,20 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                 ui_push_log(ctx, err_msg)
                 time.sleep(2)
         
-        # 移除重复的 total_downloaded 更新
+        
         flush_single_chunk_buffer(ctx, task)
         
         if task.downloaded >= total_chunk_len:
             with ctx.global_lock:
                 task.finished = True
             ui_push_log(ctx, f"分片{task.chunk_idx}数据下载完成")
-            dump_progress_json(ctx)
+
         
         ctx.task_queue.task_done()
     
     session.close()
 
-# -------------------------- UI异步推送纯函数 --------------------------
+# -------------------------- UI异步推送--------------------------
 def ui_push_global_status(ctx: DownloadCtx, msg: str) -> None:
     if ctx.stop_event.is_set() or ctx.ui_frame is None:
         return
@@ -364,8 +369,8 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     now_ts = time.time()
     delta_ts = now_ts - ctx.last_speed_calc_ts
     
-    # 增加刷新间隔，避免文本打架
-    if delta_ts < 0.8:  # 从0.5秒增加到0.8秒
+
+    if delta_ts < 0.3:  
         return
     
     with ctx.global_lock:
@@ -373,18 +378,18 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
         ctx.last_total_bytes = ctx.total_downloaded
         ctx.last_speed_calc_ts = now_ts
     
-    # 滑动窗口平均速度（最近8次速度的平均值）
+  
     if not hasattr(ctx, 'speed_history'):
         ctx.speed_history = []
     
     current_speed = delta_bytes / delta_ts if delta_ts > 0 else 0
     ctx.speed_history.append(current_speed)
     
-    # 保持最近8个样本（减少内存占用）
+
     if len(ctx.speed_history) > 8:
         ctx.speed_history.pop(0)
     
-    # 计算平均速度（中位数滤波）
+
     valid_speeds = [s for s in ctx.speed_history if s > 0]
     if valid_speeds:
         valid_speeds.sort()
@@ -395,15 +400,15 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     else:
         avg_speed = current_speed
     
-    # 速度变化限制（最多变化30%，更严格）
+
     if hasattr(ctx, 'last_avg_speed') and ctx.last_avg_speed > 0:
-        max_increase = ctx.last_avg_speed * 1.3
-        max_decrease = ctx.last_avg_speed * 0.7
+        max_increase = ctx.last_avg_speed * 1.5
+        max_decrease = ctx.last_avg_speed * 0.5
         avg_speed = max(min(avg_speed, max_increase), max_decrease)
     
     ctx.last_avg_speed = avg_speed
     
-    # 使用配置的速度单位格式化
+
     speed_str = format_speed(avg_speed, ctx.speed_unit)
     
     # 计算已耗时
@@ -412,7 +417,7 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
     
-    # 计算剩余时间（平滑处理）
+    # 计算剩余时间
     if avg_speed > 0:
         remain_bytes = ctx.file_total_size - ctx.total_downloaded
         remain_sec_raw = remain_bytes / avg_speed
@@ -421,8 +426,8 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
         if not hasattr(ctx, 'last_remain_sec'):
             ctx.last_remain_sec = remain_sec_raw
         else:
-            # alpha=0.2，更平滑
-            ctx.last_remain_sec = 0.2 * remain_sec_raw + 0.8 * ctx.last_remain_sec
+
+            ctx.last_remain_sec = 0.5 * remain_sec_raw + 0.5 * ctx.last_remain_sec
         
         remain_sec = ctx.last_remain_sec
         
@@ -434,13 +439,7 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     
     global_pct = min(int((ctx.total_downloaded / ctx.file_total_size) * 100), 100)
     
-    # 使用 CallAfter 但添加防抖
-    if not hasattr(ctx, 'ui_refresh_pending') or not ctx.ui_refresh_pending:
-        ctx.ui_refresh_pending = True
-        def do_refresh():
-            ctx.ui_refresh_pending = False
-            ctx.ui_frame.refresh_speed_info(speed_str, time_str, remain_str, global_pct)
-        wx.CallAfter(do_refresh)
+    wx.CallAfter(ctx.ui_frame.refresh_speed_info, speed_str, time_str, remain_str, global_pct)
 # -------------------------- 顶层调度核心函数 --------------------------
 
 def schedule_download_task(ctx: DownloadCtx) -> None:
@@ -472,14 +471,14 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     
     ui_push_global_status(ctx, f"{ctx.file_total_size / 1024 / 1024:.2f}MiB")
     
-    # 启动工作线程
+
     worker_threads = []
     for _ in range(ctx.jobs):
         t = threading.Thread(target=single_chunk_worker, args=(ctx,), daemon=True)
         worker_threads.append(t)
         t.start()
     
-    # 等待所有分片完成或停止事件触发
+
     while not ctx.stop_event.is_set():
         all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
         if all_chunk_finished:
@@ -487,30 +486,29 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         ui_refresh_speed_panel(ctx)
         time.sleep(0.1)
     
-    # 停止UI更新
+
     ctx.stop_event.set()
     
-    # 清理文件对象
+
     if ctx.file_obj is not None:
         ctx.file_obj.flush()
         os.fsync(ctx.file_obj.fileno())
         ctx.file_obj.close()
         ctx.file_obj = None
-    
-    # 后台清理
+
     def background_cleanup():
         try:
             ctx.task_queue.join()
             for t in worker_threads:
                 if t.is_alive():
                     t.join(timeout=2)
-            dump_progress_json(ctx)
+         
         except Exception as e:
             ui_push_log(ctx, f"后台清理失败: {str(e)}")
     
     threading.Thread(target=background_cleanup, daemon=True).start()
     
-    # 文件完整性校验
+
     final_file_size = os.path.getsize(target_full_path) if os.path.exists(target_full_path) else 0
     all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
     file_complete = (final_file_size == ctx.file_total_size)
@@ -570,7 +568,11 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         
         avg_speed = final_file_size / time_cost_sec if time_cost_sec > 0 else 0
         
+        ctx.download_completed = True
+
         def show_complete_dialog_and_close():
+            if ctx._completion_handled:
+                return
             from CompleteReport import show_download_complete_report
             show_download_complete_report(
                 parent=ctx.ui_frame,
@@ -581,12 +583,12 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
                 average_speed=avg_speed,
                 speed_unit=ctx.speed_unit 
             )
-            if ctx.ui_frame:
-                ctx.ui_frame.Close()
+            if ctx.ui_frame and not ctx._completion_handled:
+                ctx.ui_frame._handle_completed_close()
         
         wx.CallAfter(show_complete_dialog_and_close)
     
-    # 下载失败或中断
+    # 下载失败
     elif not ctx.stop_event.is_set():
         if not file_complete or not binary_valid:
             ui_push_global_status(ctx, "警告：分片显示完成，但磁盘文件数据缺失/损坏！")
@@ -675,7 +677,10 @@ class DownloadCompleteDialog(wx.Dialog):
         
         self.ctx = ctx
         self.ctx.ui_frame = self
-        self.grid_cell_pct: List[int] = [0] * len(ctx.chunk_task_list)
+        self.grid_cell_pct: List[int] = [
+            100 if t.finished else min(100, int(t.downloaded / max(1, t.end_byte - t.start_byte + 1) * 100))
+            for t in ctx.chunk_task_list
+        ]
         self.panel = wx.Panel(self)
         self.panel.SetDoubleBuffered(True)
         self.offscreen_bmp: Optional[wx.Bitmap] = None
@@ -709,7 +714,10 @@ class DownloadFrame(wx.Frame):
         
         self.ctx = ctx
         self.ctx.ui_frame = self
-        self.grid_cell_pct: List[int] = [0] * len(ctx.chunk_task_list)
+        self.grid_cell_pct: List[int] = [
+            100 if t.finished else min(100, int(t.downloaded / max(1, t.end_byte - t.start_byte + 1) * 100))
+            for t in ctx.chunk_task_list
+        ]
         self.panel = wx.Panel(self)
         self.panel.SetDoubleBuffered(True)
         self.cell_w = GRID_CELL_SIZE
@@ -779,7 +787,23 @@ class DownloadFrame(wx.Frame):
         btn_box.Add(self.btn_export)
         main_vbox.Add(btn_box, flag=wx.ALL | wx.ALIGN_CENTER, border=8)
         
+        if self.grid_cell_pct:
+            total_cols = max(1, 400 // self.cell_w)
+            total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
+            init_grid_w = total_cols * self.cell_w
+            init_grid_h = total_rows * self.cell_h
+            self.grid_scroll.SetVirtualSize((init_grid_w, init_grid_h))
+            self.grid_panel.SetMinSize((init_grid_w, init_grid_h))
+            self.grid_scroll.Layout()
+        
         self.panel.SetSizer(main_vbox)
+        self.panel.Layout()
+        
+        if self.ctx.file_total_size > 0:
+            init_pct = min(int((self.ctx.total_downloaded / self.ctx.file_total_size) * 100), 100)
+            self.global_gauge.SetValue(init_pct)
+        
+        self.grid_panel.Refresh()
     
     def append_log(self, msg: str):
         """添加日志（与 ui_push_log 函数配合使用）"""
@@ -797,6 +821,11 @@ class DownloadFrame(wx.Frame):
         scroll_w, scroll_h = self.grid_scroll.GetClientSize()
         
         if scroll_w == 0 or scroll_h == 0:
+            if self.grid_cell_pct:
+                total_cols = max(1, 400 // self.cell_w)
+                total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
+                self.grid_scroll.SetVirtualSize((total_cols * self.cell_w, total_rows * self.cell_h))
+                self.grid_panel.SetMinSize((total_cols * self.cell_w, total_rows * self.cell_h))
             return
         
 
@@ -871,40 +900,355 @@ class DownloadFrame(wx.Frame):
         self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
     
     def on_export_ndf_click(self, event):
-        """导出.ndf文件"""
+        """导出.ndf文件 - 立即停止下载，后台导出带进度"""
         try:
- 
+            if self.ctx.stop_event:
+                self.ctx.stop_event.set()
+            
+            self.btn_export.Enable(False)
+            self.btn_pause.Enable(False)
+            self.status_label.SetLabel("正在停止下载并准备导出...")
+            self.panel.Layout()
+            
+            dump_progress_json(self.ctx)
+            
             with wx.DirDialog(self, "选择导出目录", style=wx.DD_DEFAULT_STYLE) as dlg:
                 if dlg.ShowModal() == wx.ID_OK:
                     export_save_path = dlg.GetPath()
                     
-                    export_path = export_ndf(self.ctx, export_save_path)
+                    export_dialog = wx.ProgressDialog(
+                        "导出中",
+                        "正在打包下载文件...",
+                        maximum=100,
+                        parent=self
+                    )
+                    export_dialog.SetRange(100)
                     
-                    if export_path:
-                        wx.MessageBox(f"导出成功！\n文件路径: {export_path}", "导出成功", wx.OK)
-                    else:
-                        wx.MessageBox("导出失败", "错误", wx.OK | wx.ICON_ERROR)
+                    def do_export():
+                        try:
+                            ndf_full_path = os.path.join(export_save_path, f"{self.ctx.filename}{NDF_SUFFIX}")
+                            target_file = os.path.join(self.ctx.save_path, self.ctx.filename)
+                            progress_path = self.ctx.ndf_progress_path
+                            
+                            file_size = os.path.getsize(target_file) if os.path.exists(target_file) else 0
+                            chunk_size = max(1024 * 1024, file_size // 50) if file_size > 0 else 1024 * 1024
+                            current_pos = 0
+                            
+                            def update_export_progress(pct):
+                                wx.CallAfter(export_dialog.Update, pct)
+                            
+                            import io
+                            with zipfile.ZipFile(ndf_full_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                                if os.path.exists(target_file):
+                                    file_info = zipfile.ZipInfo(self.ctx.filename)
+                                    file_info.compress_type = zipfile.ZIP_DEFLATED
+                                    with open(target_file, "rb") as f_src:
+                                        with zf.open(file_info, 'w') as f_dst:
+                                            while True:
+                                                buf = f_src.read(chunk_size)
+                                                if not buf:
+                                                    break
+                                                f_dst.write(buf)
+                                                current_pos += len(buf)
+                                                pct = min(95, int((current_pos / max(1, file_size)) * 95))
+                                                update_export_progress(pct)
+                                
+                                if os.path.exists(progress_path):
+                                    with open(progress_path, "rb") as pf:
+                                        zf.writestr(PROGRESS_JSON_NAME, pf.read())
+                            
+                            update_export_progress(99)
+                            time.sleep(0.2)
+                            wx.CallAfter(self._on_export_done, export_dialog, ndf_full_path, True)
+                        except Exception as e:
+                            wx.CallAfter(self._on_export_done, export_dialog, str(e), False)
+                    
+                    threading.Thread(target=do_export, daemon=True).start()
+                else:
+                    self.btn_export.Enable()
+                    self.btn_pause.Enable()
+                    self.status_label.SetLabel("准备初始化下载...")
         except Exception as e:
             wx.MessageBox(f"导出失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            self.btn_export.Enable()
+            self.btn_pause.Enable()
+
+    def _on_export_done(self, export_dialog, result, success):
+        """导出完成回调"""
+        try:
+            export_dialog.Update(100)
+            wx.Yield()
+            export_dialog.Update(101)
+            export_dialog.Hide()
+            export_dialog.Destroy()
+        except Exception:
+            pass
+        
+        if success:
+            self.status_label.SetLabel("导出完成")
+            wx.MessageBox(f"导出成功！\n文件路径: {result}", "导出成功", wx.OK)
+            
+            target_file = os.path.join(self.ctx.save_path, self.ctx.filename)
+            if os.path.exists(target_file):
+                dlg = wx.MessageDialog(
+                    self,
+                    f"是否删除原下载文件？\n\n源文件: {target_file}\n.ndf 文件已包含该内容。",
+                    "保留源文件",
+                    wx.YES_NO | wx.ICON_QUESTION
+                )
+                if dlg.ShowModal() == wx.ID_NO:
+                    safe_delete_file(target_file)
+                    if os.path.exists(self.ctx.ndf_progress_path):
+                        safe_delete_file(self.ctx.ndf_progress_path)
+                dlg.Destroy()
+        else:
+            self.status_label.SetLabel("导出失败")
+            wx.MessageBox(f"导出失败: {result}", "错误", wx.OK | wx.ICON_ERROR)
+        
+        self.Close()
 
 
     def on_window_close(self, event):
         """窗口关闭处理"""
+        ctx = self.ctx
 
-        if self.ctx.stop_event:
-            self.ctx.stop_event.set()
+        if ctx._completion_handled:
+            self.Destroy()
+            return
+
+        is_completed = ctx.download_completed
+        if not is_completed:
+            if ctx.file_total_size > 0 and ctx.total_downloaded >= ctx.file_total_size:
+                all_done = all(t.finished for t in ctx.chunk_task_list) if ctx.chunk_task_list else True
+                if all_done:
+                    is_completed = True
+                    ctx.download_completed = True
+            elif ctx.file_total_size <= 0 and ctx.chunk_task_list:
+                all_done = all(t.finished for t in ctx.chunk_task_list)
+                if all_done and ctx.total_downloaded > 0:
+                    is_completed = True
+                    ctx.download_completed = True
+
+        if is_completed:
+            dump_progress_json(ctx)
+            self._handle_completed_close()
+            return
+
+        dump_progress_json(ctx)
+        if ctx.stop_event:
+            ctx.stop_event.set()
+
+        if ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
+            dlg = wx.MessageDialog(
+                self,
+                f"是否将当前进度写回原 NDF 文件？\n\n"
+                f"原文件: {ctx.original_ndf_path}\n"
+                f"将使用当前下载进度覆盖原 NDF 内容。",
+                "更新 NDF",
+                wx.YES_NO | wx.ICON_QUESTION
+            )
+            result = dlg.ShowModal()
+            dlg.Destroy()
+            
+            if result == wx.ID_YES:
+                self._update_ndf_and_close()
+                return
         
-
-        # time.sleep(0.5)
-        
-
-        if self.ctx.completion_callback:
+        if ctx.completion_callback:
             try:
-                self.ctx.completion_callback(success=False, size=0)
+                ctx.completion_callback(success=False, size=0)
             except Exception:
                 pass
         
+        self.Destroy()
+    
+    def _handle_completed_close(self):
+        """下载完成"""
+        ctx = self.ctx
 
+        if ctx._completion_handled:
+            self.Destroy()
+            return
+
+        ctx._completion_handled = True
+
+
+        if ctx.ndf_extracted_dir and os.path.exists(ctx.ndf_extracted_dir):
+            src_file = os.path.join(ctx.ndf_extracted_dir, ctx.filename)
+            dst_file = os.path.join(ctx.save_path, ctx.filename)
+            
+            if os.path.exists(src_file) and src_file != dst_file:
+                self._move_file_with_progress(src_file, dst_file, "移动文件到保存目录")
+            
+
+            shutil.rmtree(ctx.ndf_extracted_dir, ignore_errors=True)
+            ctx.ndf_extracted_dir = ""
+
+       
+        if ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
+            dlg = wx.MessageDialog(
+                self,
+                f"下载完成！是否删除原 NDF 文件？\n\n"
+                f"原文件: {ctx.original_ndf_path}\n"
+                f"下载文件已保存到: {ctx.save_path}",
+                "删除 NDF",
+                wx.YES_NO | wx.ICON_QUESTION
+            )
+            result = dlg.ShowModal()
+            dlg.Destroy()
+            
+            if result == wx.ID_YES:
+                safe_delete_file(ctx.original_ndf_path)
+                if os.path.exists(ctx.ndf_progress_path):
+                    safe_delete_file(ctx.ndf_progress_path)
+        
+
+        if ctx.completion_callback:
+            try:
+                ctx.completion_callback(success=False, size=0)
+            except Exception:
+                pass
+        
+        self.Destroy()
+    
+    def _move_file_with_progress(self, src, dst, title):
+        """带进度的文件移动"""
+        file_size = os.path.getsize(src)
+        chunk_size = max(1024 * 1024, file_size // 50) if file_size > 0 else 1024 * 1024
+        current_pos = 0
+        
+        progress_dlg = wx.ProgressDialog(
+            title,
+            "正在移动文件...",
+            maximum=100,
+            parent=self
+        )
+        progress_dlg.SetRange(100)
+        
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+            
+            with open(src, "rb") as f_src:
+                with open(dst, "wb") as f_dst:
+                    while True:
+                        buf = f_src.read(chunk_size)
+                        if not buf:
+                            break
+                        f_dst.write(buf)
+                        current_pos += len(buf)
+                        pct = min(99, int((current_pos / max(1, file_size)) * 99))
+                        progress_dlg.Update(pct)
+                        wx.Yield()
+            
+            progress_dlg.Update(100)
+            wx.Yield()
+        except Exception:
+            pass
+        finally:
+            try:
+                progress_dlg.Update(100)
+                progress_dlg.Hide()
+                progress_dlg.Destroy()
+            except Exception:
+                pass
+    
+    def _update_ndf_and_close(self):
+        """后台更新 NDF，完成后关闭窗口"""
+        ctx = self.ctx
+
+        ctx._completion_handled = True
+
+        ndf_path = ctx.original_ndf_path
+        target_file = os.path.join(ctx.save_path, ctx.filename)
+        
+        file_size = os.path.getsize(target_file) if os.path.exists(target_file) else 0
+        chunk_size = max(1024 * 1024, file_size // 50) if file_size > 0 else 1024 * 1024
+        
+        progress_dlg = wx.ProgressDialog(
+            "更新 NDF",
+            "正在重新打包下载进度...",
+            maximum=100,
+            parent=self
+        )
+        progress_dlg.SetRange(100)
+        
+        self._ndf_update_done = False
+        self._ndf_update_success = False
+        self._ndf_update_result = ""
+        
+        def do_update():
+            try:
+                tmp_ndf = ndf_path + ".tmp"
+                current_pos = 0
+                with zipfile.ZipFile(tmp_ndf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    if os.path.exists(target_file):
+                        file_info = zipfile.ZipInfo(ctx.filename)
+                        file_info.compress_type = zipfile.ZIP_DEFLATED
+                        with open(target_file, "rb") as f_src:
+                            with zf.open(file_info, 'w') as f_dst:
+                                while True:
+                                    buf = f_src.read(chunk_size)
+                                    if not buf:
+                                        break
+                                    f_dst.write(buf)
+                                    current_pos += len(buf)
+                                    pct = min(95, int((current_pos / max(1, file_size)) * 95))
+                                    wx.CallAfter(progress_dlg.Update, pct)
+                    
+                    if os.path.exists(ctx.ndf_progress_path):
+                        with open(ctx.ndf_progress_path, "rb") as pf:
+                            zf.writestr(PROGRESS_JSON_NAME, pf.read())
+                
+                wx.CallAfter(progress_dlg.Update, 99)
+                time.sleep(0.1)
+                
+                if os.path.exists(ndf_path):
+                    os.remove(ndf_path)
+                shutil.move(tmp_ndf, ndf_path)
+                
+                self._ndf_update_success = True
+                self._ndf_update_result = ndf_path
+            except Exception as e:
+                if os.path.exists(ndf_path + ".tmp"):
+                    os.remove(ndf_path + ".tmp")
+                self._ndf_update_success = False
+                self._ndf_update_result = str(e)
+            finally:
+                self._ndf_update_done = True
+        
+        threading.Thread(target=do_update, daemon=True).start()
+        
+      
+        while not self._ndf_update_done:
+            wx.Yield()
+            time.sleep(0.05)
+        
+        try:
+            progress_dlg.Update(100)
+            wx.Yield()
+            progress_dlg.Update(100)
+            progress_dlg.Hide()
+            progress_dlg.Destroy()
+        except Exception:
+            pass
+        
+        if self._ndf_update_success:
+            wx.MessageBox(f"NDF 文件已更新！\n路径: {self._ndf_update_result}", "更新成功", wx.OK)
+        else:
+            wx.MessageBox(f"NDF 更新失败: {self._ndf_update_result}", "错误", wx.OK | wx.ICON_ERROR)
+        
+        # 清理
+        if ctx.ndf_extracted_dir and os.path.exists(ctx.ndf_extracted_dir):
+            shutil.rmtree(ctx.ndf_extracted_dir, ignore_errors=True)
+            ctx.ndf_extracted_dir = ""
+        
+        if ctx.completion_callback:
+            try:
+                ctx.completion_callback(success=False, size=0)
+            except Exception:
+                pass
+        
         self.Destroy()
 
     def start_schedule_thread(self):
@@ -918,14 +1262,14 @@ def Download(
     uuid: str,
     URL: str,                    # 文件下载链接
     SavePath: str,               # 文件保存目录
-    FileName: str,               # 输出文件名（带后缀）
+    FileName: str,               # 输出文件名
     Jobs: int = 8,               # 并发分片线程数
     Size: int = 10 * 1024 * 1024,# 单分片字节大小 默认10MB
     Head: dict = None,           # HTTP请求头字典
     Cache: float = 32.0,         # 内存缓冲MB
-    Run: str = None,             # 完成动作 Open / Shutdown
+    Run: str = None,             # 完成动作 Open/Shutdown
     disable_ssl: bool = False,   # 关闭SSL校验
-    completion_callback = None,  # 完成回调(success:bool, size:int)
+    completion_callback = None,  # 完成回调
     ResumePath: str = ""  ,       # 断点续传JSON路径
      SpeedUnit: str = "MB/s"
 ):
@@ -954,24 +1298,245 @@ def Download(
     DownloadFrame(ctx=download_ctx)
     app.MainLoop()
 
+# -------------------------- 断点续传恢复入口 --------------------------
+def _safe_message(msg, title="提示", style=wx.OK):
+    if wx.GetApp() is not None:
+        wx.MessageBox(msg, title, style)
+    else:
+        print(f"[{title}] {msg}")
+
+def ResumeDownload(
+    ResumePath: str,            # .ndf 文件路径
+    SavePath: str = "",         
+    uuid: str = "",
+    SpeedUnit: str = "MB/s",
+    completion_callback = None,
+    Jobs: int = 0,              # 可选：覆盖线程数，0 表示使用进度文件中的值
+    Size: int = 0,              # 可选：覆盖单分片大小，0 表示使用进度文件中的值
+    Cache: float = 0.0,         # 可选：覆盖缓存大小(MB)，0 表示使用默认 32MB
+    Head: dict = None,          # 可选：自定义请求头
+    disable_ssl: bool = False,  # 可选：关闭SSL校验
+    InputPath: str = ""         # 可选：恢复对话框中填入的保存路径（优先使用）
+) -> bool:
+    """
+    断点续传恢复函数
+    - 支持 .ndf 文件（自动解压导入）
+    - 支持 .json 进度文件（直接恢复）
+    - Jobs/Size/Cache/Head/disable_ssl 传入则覆盖进度文件中的旧值
+    - InputPath 为用户在恢复界面填入的保存路径，优先于其他路径
+    返回是否成功启动续传
+    """
+    try:
+        app = wx.App(False)
+    except Exception:
+        app = wx.GetApp()
+    
+    resume_json_path = ""
+    extracted_dir = ""
+    progress_data = {}
+
+
+    if ResumePath.lower().endswith(NDF_SUFFIX):
+        # 解压
+        extracted_dir = tempfile.mkdtemp(prefix="ndf_resume_")
+        success, progress_data = import_ndf(ResumePath, extracted_dir)
+        if not success:
+            _safe_message("NDF文件导入失败，文件可能已损坏", "恢复失败", wx.OK | wx.ICON_ERROR)
+            if app:
+                app.MainLoop()
+            return False
+
+        resume_json_path = os.path.join(extracted_dir, PROGRESS_JSON_NAME)
+    elif ResumePath.lower().endswith(".json"):
+
+        if not os.path.exists(ResumePath):
+            _safe_message(f"进度文件不存在: {ResumePath}", "恢复失败", wx.OK | wx.ICON_ERROR)
+            if app:
+                app.MainLoop()
+            return False
+        progress_data = load_progress_json(ResumePath)
+        resume_json_path = ResumePath
+    else:
+        _safe_message("无效的恢复文件类型，请使用 .ndf 或 .json 文件", "恢复失败", wx.OK | wx.ICON_ERROR)
+        if app:
+            app.MainLoop()
+        return False
+
+
+    if not progress_data or "url" not in progress_data:
+        _safe_message("进度文件损坏或缺少必要信息", "恢复失败", wx.OK | wx.ICON_ERROR)
+
+        if extracted_dir and os.path.exists(extracted_dir):
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        if app:
+            app.MainLoop()
+        return False
+
+
+    url = progress_data["url"]
+    original_save_path = progress_data.get("save_path", "")
+    filename = progress_data["filename"]
+    file_total_size = progress_data.get("file_total_size", 0)
+
+
+    jobs = Jobs if Jobs > 0 else progress_data.get("jobs", 8)
+    chunk_size = Size if Size > 0 else progress_data.get("chunk_size", 10 * 1024 * 1024)
+    cache_mb = Cache if Cache > 0 else 32.0
+    headers = Head if Head else {}
+
+
+    if jobs > 128:
+        _safe_message("并发线程最大限制128，已自动修正为128", "参数警告", wx.OK)
+        jobs = 128
+    if jobs < 1:
+        jobs = 1
+
+   
+    if InputPath:
+        final_save_path = InputPath
+    elif SavePath:
+        final_save_path = SavePath
+    elif ResumePath.lower().endswith(NDF_SUFFIX):
+        final_save_path = os.path.dirname(os.path.abspath(ResumePath))
+    elif original_save_path:
+        final_save_path = original_save_path
+    else:
+        final_save_path = os.getcwd()
+    
+    os.makedirs(final_save_path, exist_ok=True)
+    
+
+    ndf_file_was_moved = False
+    if extracted_dir:
+        src_file = os.path.join(extracted_dir, filename)
+        dst_file = os.path.join(final_save_path, filename)
+        if os.path.exists(src_file):
+            if not os.path.exists(dst_file):
+                shutil.move(src_file, dst_file)
+                ndf_file_was_moved = True
+            elif os.path.isdir(dst_file):
+                shutil.rmtree(dst_file, ignore_errors=True)
+                shutil.move(src_file, dst_file)
+                ndf_file_was_moved = True
+            elif os.path.getsize(src_file) != os.path.getsize(dst_file):
+                os.remove(dst_file)
+                shutil.move(src_file, dst_file)
+                ndf_file_was_moved = True
+            else:
+                ndf_file_was_moved = True
+        
+
+        if os.path.exists(resume_json_path):
+            dst_json = os.path.join(final_save_path, f"{filename}_{PROGRESS_JSON_NAME}")
+            shutil.copy2(resume_json_path, dst_json)
+            resume_json_path = dst_json
+    
+    save_path = final_save_path
+
+
+    target_file = os.path.join(save_path, filename)
+    if not os.path.exists(target_file):
+   
+        if extracted_dir and os.path.exists(extracted_dir):
+            src_file_check = os.path.join(extracted_dir, filename)
+            if os.path.exists(src_file_check):
+                _safe_message(
+                    f"文件移动失败！源文件仍在: {src_file_check}\n"
+                    f"目标位置: {target_file}",
+                    "恢复失败", wx.OK | wx.ICON_ERROR
+                )
+                shutil.rmtree(extracted_dir, ignore_errors=True)
+                if app:
+                    app.MainLoop()
+                return False
+        
+        _safe_message(
+            f"未找到已下载的文件: {target_file}\n"
+            f"请确保下载文件与进度文件在同一目录下",
+            "恢复失败", wx.OK | wx.ICON_ERROR
+        )
+        if extracted_dir and os.path.exists(extracted_dir):
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        if app:
+            app.MainLoop()
+        return False
+
+    os.makedirs(save_path, exist_ok=True)
+    download_ctx = init_download_context(
+        url=url,
+        save_path=save_path,
+        filename=filename,
+        jobs=jobs,
+        chunk_size=chunk_size,
+        headers=headers,
+        cache_mb=cache_mb,
+        run_after=None,
+        disable_ssl=disable_ssl,
+        completion_callback=completion_callback,
+        resume_json_path=resume_json_path,
+        uuid=uuid,
+        speed_unit=SpeedUnit
+    )
+    
+    if ResumePath.lower().endswith(NDF_SUFFIX):
+        download_ctx.original_ndf_path = ResumePath
+
+        if not ndf_file_was_moved:
+            download_ctx.ndf_extracted_dir = extracted_dir
+        else:
+         
+            download_ctx.ndf_extracted_dir = ""
+
+            if os.path.exists(extracted_dir):
+                shutil.rmtree(extracted_dir, ignore_errors=True)
+                extracted_dir = ""
+
+
+    if not download_ctx.chunk_task_list:
+        _safe_message("恢复失败：无法创建分片任务", "恢复失败", wx.OK | wx.ICON_ERROR)
+        if extracted_dir and os.path.exists(extracted_dir):
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        if app:
+            app.MainLoop()
+        return False
+
+
+    if app is None:
+        app = wx.GetApp()
+    if app is None:
+        app = wx.App(False)
+    DownloadFrame(ctx=download_ctx)
+    app.MainLoop()
+
+  
+    if extracted_dir and os.path.exists(extracted_dir):
+        shutil.rmtree(extracted_dir, ignore_errors=True)
+    
+    return True
+
 # -------------------------- 测试入口 --------------------------
 if __name__ == "__main__":
-    test_url = "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.32/release/c390e792/QQ_3.2.31_260710_amd64_01.deb"
-    test_save = "/home/yujy/下载"
-    test_name = "1.rar"
-    custom_header = {
-        "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
-    }
-    Download(
-        uuid="11",
-        URL=test_url,
-        SavePath=test_save,
-        FileName=test_name,
-        Jobs=18,
-        Size=1024*1024,
-        Head=custom_header,
-        Cache=10,
-        Run=None,
-        disable_ssl=True,
-        SpeedUnit="Mbps"
-    )
+
+    if input("是否测试下载？(y/n)") == "y":
+        print("测试下载模式")
+        test_url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/df53daabb18cd157bdb08c7f01c34df936cf12f4/code_1.132.0-1785860022_amd64.deb"
+        test_save = "/home/yujy/下载"
+        test_name = "code.deb"
+        custom_header = {
+            "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
+        }
+        Download(
+            uuid="11",
+            URL=test_url,
+            SavePath=test_save,
+            FileName=test_name,
+            Jobs=18,
+            Size=1*1024*1024,
+            Head=custom_header,
+            Cache=10,
+            Run=None,
+            disable_ssl=True,
+            SpeedUnit="MiB"
+        )
+    else:
+        ResumeDownload("/home/yujy/下载/code.deb.ndf", Jobs=16, Cache=20.0)
