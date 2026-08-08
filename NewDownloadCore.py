@@ -1519,9 +1519,9 @@ if __name__ == "__main__":
 
     if input("是否测试下载？(y/n)") == "y":
         print("测试下载模式")
-        test_url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/df53daabb18cd157bdb08c7f01c34df936cf12f4/code_1.132.0-1785860022_amd64.deb"
-        test_save = "/home/yujy/下载"
-        test_name = "code.deb"
+        test_url = ""
+        test_save = ""
+        test_name = ""
         custom_header = {
             "User-Agent": "Mozilla/5.0 Windows MultiDownloader"
         }

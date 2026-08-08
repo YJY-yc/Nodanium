@@ -9,3 +9,7 @@ Pack.sh
 NodaniumLauncher.build/
 NodaniumLauncher.dist/
 Nodanium-BrowserPlugin/
+venv/
+tmp_build/
+venv311/
+Plugins/__pycache__/
