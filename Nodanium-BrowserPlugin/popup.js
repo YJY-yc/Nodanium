@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
   const testBtn = document.getElementById('testBtn');
+  const toggleBtn = document.getElementById('toggleBtn');
   const manualUrl = document.getElementById('manualUrl');
   const sendManualBtn = document.getElementById('sendManualBtn');
   const clearCacheBtn = document.getElementById('clearCacheBtn');
@@ -18,6 +19,29 @@ document.addEventListener('DOMContentLoaded', () => {
       statusText.textContent = message || '未连接';
     }
   }
+
+  // 加载启用状态
+  function loadToggle() {
+    chrome.runtime.sendMessage({ type: 'getEnabled' }, (resp) => {
+      const on = resp && resp.enabled !== false;
+      if (toggleBtn) {
+        toggleBtn.textContent = on ? '🟢 拦截已开启' : '🔴 拦截已关闭';
+        toggleBtn.classList.toggle('btn-primary', on);
+        toggleBtn.classList.toggle('btn-danger', !on);
+      }
+    });
+  }
+
+  // 切换拦截开关
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const now = toggleBtn.textContent.indexOf('开启') !== -1;
+      chrome.runtime.sendMessage({ type: 'setEnabled', value: !now }, () => {
+        loadToggle();
+      });
+    });
+  }
+  loadToggle();
 
   // 测试连接
   testBtn.addEventListener('click', async () => {
@@ -91,5 +115,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // 初始状态
+  loadToggle();
   updateStatus(true, '就绪');
 });

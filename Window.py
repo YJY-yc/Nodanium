@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.6.0.0"
+vision = "3.6.0.2"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -81,6 +81,7 @@ config = {
     'size_button': (100, 30),
     'window_pos': (100, 20),  
     'window_size': [1020, 700],
+    'sidebar_width': 160,
     'high_dpi':True,
     'share_path': os.path.join(os.path.expanduser("~"), "SharedFiles") if sys.platform.startswith('linux') else "D:/SharedFiles",
     'default_port':1524,
@@ -563,7 +564,110 @@ def Window(silence=False):
     listbook.SetFont(wx.Font(ListButtonSize, wx.FONTFAMILY_DEFAULT, 
                   wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, 
                   faceName=fontname))
-    
+
+    # === 修复左树菜单：父节点点击仅展开/收起子节点，不进入空白页 ===
+    _nav_tree = listbook.GetTreeCtrl()
+    def _on_tree_sel_changing(event):
+        try:
+            item = event.GetItem()
+            if item.IsOk() and _nav_tree.ItemHasChildren(item):
+                # 父节点：否决页面切换，仅展开/收起
+                event.Veto()
+                if _nav_tree.IsExpanded(item):
+                    _nav_tree.Collapse(item)
+                else:
+                    _nav_tree.Expand(item)
+                return
+        except Exception as e:
+            logging.error(f"父节点点击处理失败: {e}")
+        event.Skip()
+    _nav_tree.Bind(wx.EVT_TREE_SEL_CHANGING, _on_tree_sel_changing)
+
+    # === 修复左树面板：支持拖拽调整宽度，并保存到配置 ===
+    _sidebar_state = {'active': False}
+    SIDEBAR_MIN = 90
+    SIDEBAR_MAX = 380
+    _cursor_resize = wx.Cursor(wx.CURSOR_SIZEWE)
+
+    # 一个独立、可见的拖拽分隔条，覆盖在树与内容之间的边界上
+    _resize_bar = wx.Panel(listbook)
+    _resize_bar.SetBackgroundColour(wx.Colour(170, 170, 170))
+    _resize_bar.SetCursor(_cursor_resize)
+
+    def _apply_saved_width():
+        saved_w = int(config.get('sidebar_width', 160) or 160)
+        if saved_w >= SIDEBAR_MIN:
+            _nav_tree.SetMinSize((saved_w, 10))
+            _nav_tree.SetSize((saved_w, _nav_tree.GetSize().height))
+            listbook.SendSizeEvent()
+
+    def _position_resize_bar():
+        try:
+            w = _nav_tree.GetSize().width
+            h = listbook.GetClientSize().height
+            _resize_bar.SetPosition((w, 0))
+            _resize_bar.SetSize((8, h))
+            _resize_bar.Raise()
+        except Exception:
+            pass
+
+    def _on_bar_left_down(event):
+        _sidebar_state['active'] = True
+        try:
+            _resize_bar.CaptureMouse()
+        except Exception:
+            pass
+        event.Skip()
+
+    def _on_bar_motion(event):
+        if not _sidebar_state['active']:
+            event.Skip()
+            return
+        try:
+            # 鼠标在 listbook 内的横坐标 → 目标宽度
+            mx = _resize_bar.ScreenToClient(wx.GetMousePosition()).x
+            bar_x = _resize_bar.GetPosition().x
+            new_w = max(SIDEBAR_MIN, min(SIDEBAR_MAX, bar_x + mx))
+            h = _nav_tree.GetSize().height
+            _nav_tree.SetSize((new_w, h))
+            _nav_tree.SetMinSize((new_w, 10))
+            _position_resize_bar()
+            # 关键：触发 Treebook 内部重新布局，让右侧面板即时跟随左树宽度，
+            # 而不是只改变树宽度遗留灰色区域
+            listbook.SendSizeEvent()
+        except Exception as e:
+            logging.error(f"调整左树宽度失败: {e}")
+        event.Skip()
+
+    def _on_bar_left_up(event):
+        if _sidebar_state['active']:
+            _sidebar_state['active'] = False
+            try:
+                if _resize_bar.HasCapture():
+                    _resize_bar.ReleaseMouse()
+            except Exception:
+                pass
+            # 保存宽度到配置
+            try:
+                new_w = _nav_tree.GetSize().width
+                if new_w >= SIDEBAR_MIN:
+                    config['sidebar_width'] = new_w
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                logging.error(f"保存左树宽度失败: {e}")
+            event.Skip()
+
+    _resize_bar.Bind(wx.EVT_LEFT_DOWN, _on_bar_left_down)
+    _resize_bar.Bind(wx.EVT_MOTION, _on_bar_motion)
+    _resize_bar.Bind(wx.EVT_LEFT_UP, _on_bar_left_up)
+    listbook.Bind(wx.EVT_SIZE, lambda evt: (_position_resize_bar(), evt.Skip()))
+    _nav_tree.Bind(wx.EVT_SIZE, lambda evt: (_position_resize_bar(), evt.Skip()))
+    frame.Bind(wx.EVT_SIZE, lambda evt: (_position_resize_bar(), evt.Skip()))
+
+    _apply_saved_width()
+    _position_resize_bar()
+
 
     panel0 = wx.Panel(listbook)
 
@@ -604,21 +708,21 @@ def Window(silence=False):
 
     # 网络工具（父节点）
     listbook.AddPage(wx.Panel(listbook), "网络工具", imageId=2)
-    listbook.AddSubPage(panel3, "网页筛选", imageId=2)  # 移除parent参数
-    listbook.AddSubPage(panel9, "DNS编辑", imageId=10)  # 移除parent参数
-    listbook.AddSubPage(panel10, "Ping", imageId=11)  # 移除parent参数
+    listbook.AddSubPage(panel3, "网页筛选", imageId=2) 
+    listbook.AddSubPage(panel9, "DNS编辑", imageId=10)  
+    listbook.AddSubPage(panel10, "Ping", imageId=11) 
 
-    # 系统工具（父节点）
-    listbook.AddPage(wx.Panel(listbook), "系统工具", imageId=12)
-    listbook.AddSubPage(panel12, "端口管理器", imageId=13)  # 移除parent参数
-    listbook.AddSubPage(panel11, "文件服务", imageId=12)  # 移除parent参数
-    listbook.AddSubPage(panel6, "转发文件", imageId=5)  # 移除parent参数
-
+    
+    
+    listbook.AddSubPage(panel11, "文件服务", imageId=12)
+    listbook.AddSubPage(panel6, "转发文件", imageId=5)  
+    listbook.AddSubPage(panel14, "流量转盘", imageId=4)  
     # 管理功能（父节点）
     listbook.AddPage(wx.Panel(listbook), "管理功能", imageId=4)
-    listbook.AddSubPage(panel13, "下载管理", imageId=5)  # 移除parent参数
-    listbook.AddSubPage(panel5, "历史记录", imageId=4)
-    listbook.AddSubPage(panel14, "流量转盘", imageId=4)  # 移除parent参数
+    listbook.AddSubPage(panel12, "端口管理器", imageId=13) 
+    listbook.AddSubPage(panel13, "下载管理", imageId=5)  
+    
+    
     try:
         FileShareShell.MainPanel(panel6)
     except Exception as e:
@@ -635,65 +739,66 @@ def Window(silence=False):
 
 
     #插件加载
-    listbook.AddPage(wx.Panel(listbook), "插件", imageId=1)
-    try:
-        if "ChatPort" in plugins:
-            listbook.AddSubPage(panel7, "内网通讯", imageId=6)
-            ChatPort.init_chat_ui(panel7,frame)
+    if plugins:
+        listbook.AddPage(wx.Panel(listbook), "插件", imageId=1)
+        try:
+            if "ChatPort" in plugins:
+                listbook.AddSubPage(panel7, "内网通讯", imageId=6)
+                ChatPort.init_chat_ui(panel7,frame)
 
-    except Exception as e:
-        print(f"没有找到插件: {e}")
-        logging.info(f'没有找到插件: {e}')
-    try:
+        except Exception as e:
+            print(f"没有找到插件: {e}")
+            logging.info(f'没有找到插件: {e}')
+        try:
    
-        for plugin_name, plugin_module in plugins.items():
-            if plugin_name == "ChatPort":
-                continue 
-                
-            try:
-               
-                plugin_panel = wx.Panel(listbook)
-                plugin_panel.SetBackgroundColour(wx.Colour(255, 255, 255))
-               
-                icon_path = os.path.join("Plugins", f"{plugin_name}.png")
-                image_id = 14 
-                
-                
-                if os.path.exists(icon_path):
-                    try:
-                        bitmap = wx.Bitmap(icon_path, wx.BITMAP_TYPE_PNG)
-                        if bitmap.IsOk():
-                            image_id = listbook.GetImageList().Add(bitmap)
-                            
-                            logging.info(f'为 {plugin_name} 插件加载了自定义图标')
-                    except Exception as e:
-                        logging.warning(f'加载 {plugin_name} 插件图标失败: {e}')
-                        print(f"加载 {plugin_name} 插件图标失败: {e}")
-                
-                # 创建页面，使用对应图标
-                listbook.AddSubPage(plugin_panel, plugin_name, imageId=image_id)
-                
-                
-                if hasattr(plugin_module, 'MainPanel'):
-                    plugin_module.MainPanel(plugin_panel)
+            for plugin_name, plugin_module in plugins.items():
+                if plugin_name == "ChatPort":
+                    continue 
                     
-                    logging.info(f'成功初始化 {plugin_name} 插件界面')
-                else:
-                    print(f" {plugin_name} 插件没有 MainPanel 方法")
-                    logging.info(f' {plugin_name} 插件没有 MainPanel 方法')
-                if hasattr(plugin_module, 'Run'):
-                    plugin_module.Run()
-                  
-                    logging.info(f'{plugin_name} 插件成功执行Run方法')
-                else:
+                try:
                    
-                    logging.info(f' {plugin_name} 插件没有 Run 方法')
-            except Exception as e:
-                print(f"初始化 {plugin_name} 插件界面时出错: {e}")
-                logging.error(f'初始化 {plugin_name} 插件界面时出错: {e}')
-    except Exception as e:
-        print(f"遍历插件时出错: {e}")
-        logging.error(f"遍历插件时出错: {e}")
+                    plugin_panel = wx.Panel(listbook)
+                    plugin_panel.SetBackgroundColour(wx.Colour(255, 255, 255))
+                   
+                    icon_path = os.path.join("Plugins", f"{plugin_name}.png")
+                    image_id = 14 
+                    
+                    
+                    if os.path.exists(icon_path):
+                        try:
+                            bitmap = wx.Bitmap(icon_path, wx.BITMAP_TYPE_PNG)
+                            if bitmap.IsOk():
+                                image_id = listbook.GetImageList().Add(bitmap)
+                                
+                                logging.info(f'为 {plugin_name} 插件加载了自定义图标')
+                        except Exception as e:
+                            logging.warning(f'加载 {plugin_name} 插件图标失败: {e}')
+                            print(f"加载 {plugin_name} 插件图标失败: {e}")
+                    
+                    # 创建页面，使用对应图标
+                    listbook.AddSubPage(plugin_panel, plugin_name, imageId=image_id)
+                    
+                    
+                    if hasattr(plugin_module, 'MainPanel'):
+                        plugin_module.MainPanel(plugin_panel)
+                        
+                        logging.info(f'成功初始化 {plugin_name} 插件界面')
+                    else:
+                        print(f" {plugin_name} 插件没有 MainPanel 方法")
+                        logging.info(f' {plugin_name} 插件没有 MainPanel 方法')
+                    if hasattr(plugin_module, 'Run'):
+                        plugin_module.Run()
+                      
+                        logging.info(f'{plugin_name} 插件成功执行Run方法')
+                    else:
+                       
+                        logging.info(f' {plugin_name} 插件没有 Run 方法')
+                except Exception as e:
+                    print(f"初始化 {plugin_name} 插件界面时出错: {e}")
+                    logging.error(f'初始化 {plugin_name} 插件界面时出错: {e}')
+        except Exception as e:
+            print(f"遍历插件时出错: {e}")
+            logging.error(f"遍历插件时出错: {e}")
     DNSShower.init_dns_tab(panel9)
 
     PingPanel(panel10)

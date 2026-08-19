@@ -1,7 +1,7 @@
 {
-  "name": "com.nodanium.downloader",
-  "description": "Nodanium 下载器 Native Host",
-  "path": "Nodanium.exe",
+  "name": "com.nodanium.yujy",
+  "description": "Nodanium 下载器 Native Host（转交主程序内经 --download 完成下载）",
+  "path": "__HOST_PY_PATH__",
   "type": "stdio",
   "allowed_extensions": ["nodanium@downloader.com"]
 }

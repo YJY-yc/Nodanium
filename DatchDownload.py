@@ -37,7 +37,7 @@ def get_download_dir():
 
 stop_download = False
 
-def create_download_window(parent, urls, thread_count, main_site, download_dir, folder_name, list_ctrl=None, image_list=None):
+def create_download_window(parent, urls, thread_count, main_site, download_dir, folder_name, list_ctrl=None, image_list=None, chunk_size=1024*1024):
    
     folder_path = os.path.join(download_dir, folder_name)
     os.makedirs(folder_path, exist_ok=True)
@@ -85,7 +85,7 @@ def create_download_window(parent, urls, thread_count, main_site, download_dir, 
     
     threading.Thread(
         target=start_download, 
-        args=(urls, thread_count, new_gauge, new_remaining_label, new_undownloaded_list, main_site, folder_path, download_window, list_ctrl, image_list, folder_name)
+        args=(urls, thread_count, new_gauge, new_remaining_label, new_undownloaded_list, main_site, folder_path, download_window, list_ctrl, image_list, folder_name, chunk_size)
     ).start()
 
 def on_end_and_export(window, undownloaded_list):
@@ -233,63 +233,49 @@ def on_export(frame, undownloaded_list):
             wx.MessageBox("未下载列表导出成功", "提示", wx.OK|wx.ICON_INFORMATION)
         except Exception as e:
             wx.MessageBox(f"导出失败: {str(e)}", "错误", wx.OK|wx.ICON_ERROR)
-def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list, main_site, download_dir, window, list_ctrl=None, image_list=None, folder_name=""):
+def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list, main_site, download_dir, window, list_ctrl=None, image_list=None, folder_name="", chunk_size=1024*1024):
     global stop_download
     stop_download = False
     
     if not urls:
         wx.MessageBox("请先导入网址文件", "错误", wx.OK|wx.ICON_ERROR)
         return
-    
+
+    download_items = []
+    if hasattr(window, 'download_items') and window.download_items:
+        download_items = list(window.download_items)
+    else:
+        for url_item in urls:
+            url = url_item
+            filename = ""
+            if " (文件名: " in url_item and url_item.endswith(")"):
+                parts = url_item.split(" (文件名: ")
+                if len(parts) == 2:
+                    url = parts[0]
+                    filename = parts[1][:-1]
+            download_items.append({"url": url, "filename": filename})
 
     if list_ctrl and image_list:
-      
-        download_items = []
-        
-
-        if hasattr(window, 'download_items') and window.download_items:
-            download_items = window.download_items
-        else:
-
-            for url_item in urls:
-                url = url_item
-                filename = ""
-                
- 
-                if " (文件名: " in url_item and url_item.endswith(")"):
-                    parts = url_item.split(" (文件名: ")
-                    if len(parts) == 2:
-                        url = parts[0]
-                        filename = parts[1][:-1]  
-                
-                download_items.append({"url": url, "filename": filename})
-       
         parent_dir = os.path.dirname(download_dir)
-        
-     
         import uuid
-        batch_id = str(uuid.uuid4()) 
-        
-       
+        batch_id = str(uuid.uuid4())
         if not download_history:
             load_download_history()
             print("在添加记录前强制加载download_history")
-        
 
         folder_record = add_download_record(
-            url="批量下载文件夹", 
-            filename=folder_name, 
-            save_path=parent_dir,  
-            status="N/A", 
+            url="批量下载文件夹",
+            filename=folder_name,
+            save_path=parent_dir,
+            status="N/A",
             file_size=0,
-            download_items=download_items, 
-            batch_id=batch_id 
+            download_items=download_items,
+            batch_id=batch_id
         )
         refresh_download_list(list_ctrl, image_list)
     else:
-
         print("独立下载模式：不添加下载记录到主界面")
-    
+
     if main_site and not main_site.endswith('/'):
         main_site += '/'
 
@@ -311,7 +297,7 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                 current_url = main_site + current_url
             
        
-            future = executor.submit(download_file, current_url, download_dir, False, item_filename)
+            future = executor.submit(download_file, current_url, download_dir, False, item_filename, chunk_size)
             futures.append((current_url, future))
         
         while completed < total and not stop_download:
@@ -495,15 +481,19 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
     wx.CallAfter(window.Layout)
 
 
-def download_file(url, download_dir, add_single_record=True, filename=""):
+def download_file(url, download_dir, add_single_record=True, filename="", chunk_size=1024*8):
     try:
         if stop_download:  
             return False
             
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-        headers = {"user-agent": ua}
+        headers = {
+            "User-Agent": ua,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
         
-        response = requests.get(url, stream=True, headers=headers, timeout=10)
+        response = requests.get(url, stream=True, headers=headers, verify=False, timeout=(15, 90))
         if response.status_code != 200:
             print(f"下载失败: {url} 状态码: {response.status_code}")
             return False
@@ -512,13 +502,17 @@ def download_file(url, download_dir, add_single_record=True, filename=""):
         
 
         if not filename:  
-            filename = os.path.basename(url)
+            from urllib.parse import unquote
+            filename = unquote(os.path.basename(urlparse(url).path))
             if not filename:
                 filename = "download_" + str(int(time.time())) + ".bin"
+        else:
+            from urllib.parse import unquote
+            filename = unquote(filename)
         local_path = os.path.join(download_dir, filename)
         
         with open(local_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=1024*8):
+            for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk:
                     if stop_download:
                         f.close()
@@ -527,14 +521,10 @@ def download_file(url, download_dir, add_single_record=True, filename=""):
                     f.write(chunk)
         
         print(f"文件保存成功: {local_path}")
-        wx.CallAfter(show_download_complete_notification, local_path)
-        
-  
-        if add_single_record:
-            import sys
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from DownloadUI import add_download_record, refresh_download_list
-            add_download_record(url, filename, download_dir, "已完成", os.path.getsize(local_path))
+        try:
+            wx.CallAfter(show_download_complete_notification, local_path)
+        except Exception:
+            pass
         
 
         if add_single_record:

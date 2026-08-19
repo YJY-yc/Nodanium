@@ -1,0 +1,23 @@
+strictModeWhiteList:
+  - ^ls\b
+  - ^echo\b
+  - ^grep\b
+  - ^cd\b
+  - ^python3\b
+  - ^node\b
+  - ^for\b
+  - ^do\b
+  - ^then\b
+  - ^\$p\b
+  - ^break\b
+  - ^fi\b
+  - ^done\b
+  - ^command\b
+  - ^cat\b
+  - ^sed\b
+  - ^json\.dump\(\{"nativeSizeLimitBytes":\b
+  - ^\(echo\b
+  - ^\)\b
+  - ^unzip\b
+  - ^git status\b
+  - ^git show\b

@@ -282,7 +282,7 @@ if len(sys.argv) > 1:
         parsed_args["resume"] = ndf_file_arg
     
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.6.0.0\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 3.6.0.2\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()
@@ -317,7 +317,9 @@ if len(sys.argv) > 1:
         sys.exit(0 if success else 1)
     elif "download" in parsed_args:
         import NewDownloadCore
-        
+        import uuid
+        import json
+
         if "url" not in parsed_args:
             print("错误: --url 参数为必填项")
             print("使用 --help 查看帮助")
@@ -332,13 +334,38 @@ if len(sys.argv) > 1:
         default_path = os.path.join(os.path.expanduser("~"), "Downloads")
         if sys_type == "Windows":
             default_path = "D:/Downloads/"
-        save_path = parsed_args.get("path", default_path)
+        save_path = parsed_args.get("path") or default_path
         job_count = int(parsed_args.get("job", 16))
         Size = int(parsed_args.get("size", 1024*1024))
-        Header = parsed_args.get("header", "")
-        Cache=int(parsed_args.get("cache", 10))
-        Run=parsed_args.get("run", None)
-        NewDownloadCore.Download(url,save_path,  filename, job_count,Size ,Header,Cache,Run,True)
+        header_raw = parsed_args.get("header", "")
+        Cache = float(parsed_args.get("cache", 10))
+        Run = parsed_args.get("run", None)
+
+        # 解析 --header=JSON 成字典（兼容已转义或纯字符串两种写法）
+        Header = {}
+        if header_raw:
+            h = header_raw.strip()
+            if h.startswith("{"):
+                try:
+                    Header = json.loads(h)
+                except Exception:
+                    Header = {h: "true"}
+            else:
+                Header = {h: "true"}
+
+        NewDownloadCore.Download(
+            uuid=str(uuid.uuid4()),
+            URL=url,
+            SavePath=save_path,
+            FileName=filename,
+            Jobs=job_count,
+            Size=Size,
+            Head=Header or None,
+            Cache=Cache,
+            Run=Run,
+            disable_ssl=True,
+            SpeedUnit="MB/s",
+        )
         sys.exit(0)
     elif "old_download" in parsed_args:
         import DownloadCore
@@ -607,18 +634,232 @@ if not acquired:
             pass
 
 
+def _get_data_folder():
+    r"""返回当前系统的数据目录（Windows 仅 APPDATA\Nodanium）"""
+    # 注意: 使用 r 前缀避免 \N 被解析为 unicode 转义
+    if sys_type == "Windows":
+        return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+    elif sys_type == "Linux":
+        return os.path.join(os.path.expanduser("~"), ".Nodanium")
+    elif sys_type == "Darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
+    return os.path.join(os.path.expanduser("~"), ".Nodanium")
+
+
+# 程序所需的主要第三方依赖（用于依赖缺失检查）
+_REQUIRED_DEPS = {
+    "wx": "wxPython",
+    "psutil": "psutil",
+    "requests": "requests",
+    "PIL": "Pillow",
+    "bs4": "beautifulsoup4",
+    "dns": "dnspython",
+    "winotify": "winotify(仅Windows需要)",
+}
+
+
+def _clear_caches():
+    r"""清除数据目录（含配置/设置/历史/锁文件/缓存）
+    Windows 仅考虑 APPDATA\Nodanium，Linux 为 ~/.Nodanium"""
+    data_dir = _get_data_folder()
+    if not data_dir:
+        return 0, 0
+    removed = 0
+    failed = 0
+    import shutil
+
+    # 删除整个数据目录（连同锁文件/config/历史/缓存）
+    try:
+        if os.path.isdir(data_dir):
+            shutil.rmtree(data_dir, ignore_errors=False)
+            removed += 1
+    except Exception as e:
+        failed += 1
+        logging.warning(f"清除数据目录失败: {data_dir} - {e}")
+
+    # 删除锁文件（位于系统临时目录）
+    try:
+        lock = get_lockfile_path()
+        if os.path.exists(lock):
+            os.remove(lock)
+            removed += 1
+    except Exception as e:
+        failed += 1
+        logging.warning(f"清除锁文件失败: {e}")
+
+    # 删除程序目录内的编译缓存 __pycache__
+    try:
+        program_dir_now = os.path.dirname(os.path.abspath(__file__))
+        removed_pyc = 0
+        for root, dirs, files in os.walk(program_dir_now, topdown=True):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for d in list(dirs):
+                if d == "__pycache__":
+                    pyc_dir = os.path.join(root, d)
+                    try:
+                        shutil.rmtree(pyc_dir, ignore_errors=True)
+                        removed_pyc += 1
+                    except Exception:
+                        pass
+        removed += removed_pyc
+    except Exception as e:
+        logging.warning(f"清除 __pycache__ 失败: {e}")
+
+    logging.info(f"缓存清理完成: 移除 {removed} 项, 失败 {failed} 项")
+    return removed, failed
+
+
+def _check_dependencies():
+    """检查主要依赖是否缺失，返回缺失依赖名称列表"""
+    import importlib
+    missing = []
+    for mod, label in _REQUIRED_DEPS.items():
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(label)
+    # Windows 专属依赖仅在 Windows 上检查
+    if sys_type != "Windows":
+        missing = [m for m in missing if "winotify" not in m]
+    return missing
+
+
+def _show_repair_dialog(error_text):
+    """窗口无法拉起时显示的自动修复对话框
+    返回: "clear" -> 已清除缓存并准备重启; "repair" -> 已检查依赖; "exit" -> 退出"""
+    try:
+        app = wx.GetApp()
+        if app is None:
+            app = wx.App(False)
+    except Exception:
+        app = wx.App(False)
+
+    dlg = wx.Dialog(None, title="启动失败 - 自动修复", size=(680, 430))
+    panel = wx.Panel(dlg)
+    vbox = wx.BoxSizer(wx.VERTICAL)
+
+    title = wx.StaticText(panel, label="程序窗口无法拉起")
+    title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+    vbox.Add(title, flag=wx.ALL, border=12)
+
+    err_box = wx.StaticBoxSizer(wx.VERTICAL, panel, "错误信息")
+    err_text = wx.TextCtrl(panel, value=str(error_text), style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 90))
+    err_box.Add(err_text, flag=wx.EXPAND | wx.ALL, border=6)
+    vbox.Add(err_box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=12)
+
+    info = wx.StaticText(panel, label=(
+        "可能由缓存/配置文件损坏或依赖缺失导致。\n"
+        "你可以选择以下操作："))
+    info.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    vbox.Add(info, flag=wx.ALL, border=12)
+
+    btn_clear = wx.Button(panel, label="清除缓存并重新启动(&C)")
+    btn_repair = wx.Button(panel, label="检查依赖(&D)")
+    btn_exit = wx.Button(panel, label="退出(&Q)")
+
+    def on_clear(event):
+        removed, failed = _clear_caches()
+        wx.MessageBox(
+            f"缓存已清除！\n\n已移除 {removed} 项（包含配置文件、历史记录与锁文件）。\n"
+            f"失败 {failed} 项。\n\n点击确定后将重新启动程序。",
+            "清除完成", wx.OK | wx.ICON_INFORMATION)
+       
+
+    def on_repair(event):
+        missing = _check_dependencies()
+        if missing:
+            wx.MessageBox(
+                "检测到以下依赖可能缺失：\n\n" + "\n".join("- " + m for m in missing) +
+                "\n\n请通过 pip 安装后重试。",
+                "依赖检查", wx.OK | wx.ICON_WARNING)
+        else:
+            wx.MessageBox("未发现缺失的基础依赖。\n\n若仍无法启动，请尝试清除缓存。",
+                          "依赖检查", wx.OK | wx.ICON_INFORMATION)
+        dlg.EndModal("repair")
+
+    def on_exit(event):
+        dlg.EndModal("exit")
+
+    btn_clear.Bind(wx.EVT_BUTTON, on_clear)
+    btn_repair.Bind(wx.EVT_BUTTON, on_repair)
+    btn_exit.Bind(wx.EVT_BUTTON, on_exit)
+
+    hbox = wx.BoxSizer(wx.HORIZONTAL)
+    hbox.Add(btn_clear, flag=wx.RIGHT, border=10)
+    hbox.Add(btn_repair, flag=wx.RIGHT, border=10)
+    hbox.Add(btn_exit)
+    vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
+
+    panel.SetSizer(vbox)
+    # 将 panel 放入对话框并适配尺寸
+    dlg_sizer = wx.BoxSizer(wx.VERTICAL)
+    dlg_sizer.Add(panel, 1, wx.EXPAND)
+    dlg.SetSizer(dlg_sizer)
+    dlg.Center()
+    result = dlg.ShowModal()
+    dlg.Destroy()
+    return result
+
+
+def _try_relaunch():
+    """重新拉起窗口（仅在本进程中重试一次）"""
+    logging.info('重新拉起窗口')
+    for mod_name in ("Window",):
+        try:
+            if mod_name in sys.modules:
+                del sys.modules[mod_name]
+        except Exception:
+            pass
+    try:
+        import Window
+        Window.Window()
+        return True
+    except Exception as e:
+        logging.error(f'重新拉起窗口失败: {str(e)}')
+        print(f"重新拉起窗口失败:{str(e)}")
+        return False
+
+
 try:
     logging.info('启动窗口模块')
     import Window
     Window.Window()
 except Exception as e:
     print(f"导入失败:{str(e)}")
-    try:
-        app = wx.GetApp()
-        if app is None:
-            app = wx.App(False)
-    except:
-        app = wx.App(False)
-    wx.MessageBox(f"启动程序失败\n你的设备可以运行本程序，需要调试以解决此问题\n使用CLI参赛-c清除缓存\n导入窗口模块失败:\n{str(e)}", "错误", wx.OK | wx.ICON_ERROR)
     logging.error(f'导入窗口模块失败{str(e)}')
+
+    action = _show_repair_dialog(e)
+    if action == "clear":
+    
+        relaunched = _try_relaunch()
+        if not relaunched:
+
+            try:
+                app = wx.GetApp()
+                if app is None:
+                    app = wx.App(False)
+            except Exception:
+                pass
+            wx.MessageBox(
+                "清除缓存后程序仍然无法启动。\n请点击“检查依赖”确认所需依赖是否完整，\n"
+                "或查看日志以进一步排查。",
+                "仍然无法启动", wx.OK | wx.ICON_ERROR)
+    elif action == "repair":
+
+        choice = wx.MessageBox(
+            "是否清除缓存后重新尝试启动？", "依赖检查",
+            wx.YES_NO | wx.ICON_QUESTION)
+        if choice == wx.YES:
+            _clear_caches()
+            if not _try_relaunch():
+                try:
+                    app = wx.GetApp()
+                    if app is None:
+                        app = wx.App(False)
+                except Exception:
+                    pass
+                wx.MessageBox("重新启动仍失败，请查看日志排查。", "仍然无法启动",
+                              wx.OK | wx.ICON_ERROR)
+    else:
+        pass  # 退出
 logging.info('主循环已结束')

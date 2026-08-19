@@ -39,6 +39,7 @@ class ChunkTask:
     start_byte: int                 # 分片起始偏移
     end_byte: int                   # 分片结束偏移
     finished: bool = False          # 是否完成
+    failed: bool = False            # 是否重试耗尽失败
     downloaded: int = 0             # 已下载
     task_buffer: Optional[BytesIO] = None  #内存缓冲
     chunk_lock: Optional[threading.Lock] = None  # 分片写入锁
@@ -74,6 +75,7 @@ class DownloadCtx:
     ndf_extracted_dir: str = ""
     download_completed: bool = False
     _completion_handled: bool = False
+    _resume_json_path: str = ""
 
 # --------------------------  --------------------------
 
@@ -293,37 +295,43 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
         total_chunk_len = task.end_byte - task.start_byte + 1
         current_offset = task.start_byte + task.downloaded
         chunk_finish_flag = False
+        retry_times = 0
         
         while current_offset <= task.end_byte and not ctx.stop_event.is_set():
+            if retry_times >= DEFAULT_RETRY:
+                with ctx.global_lock:
+                    task.failed = True
+                ui_push_log(ctx, f"分片{task.chunk_idx}重试次数耗尽({DEFAULT_RETRY})，放弃下载")
+                break
+            offset_before = current_offset
             try:
                 range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
                 req_headers = {**ctx.headers, **range_header}
-                resp = session.get(ctx.url, headers=req_headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=(not ctx.disable_ssl))
-                resp.raise_for_status()
-                
-                for raw_data in resp.iter_content(chunk_size=8192):
-                    if ctx.stop_event.is_set():
-                        flush_single_chunk_buffer(ctx, task)
-                        break
-                    if not raw_data:
-                        continue
-                    task.task_buffer.write(raw_data)
-                    data_len = len(raw_data)
-                    task.downloaded += data_len
+                with session.get(ctx.url, headers=req_headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=(not ctx.disable_ssl)) as resp:
+                    resp.raise_for_status()
                     
-     
-                    with ctx.global_lock:
-                        ctx.total_downloaded += data_len
-                    
-                    if task.task_buffer.getbuffer().nbytes >= max_cache_bytes:
-                        flush_single_chunk_buffer(ctx, task)
-                    
-                    pct = min(int((task.downloaded / total_chunk_len) * 100), 100)
-                    ui_push_chunk_progress(ctx, task.chunk_idx, task.downloaded, total_chunk_len)
-                    current_offset = task.start_byte + task.downloaded
-                    if task.downloaded >= total_chunk_len:
-                        chunk_finish_flag = True
-                        break
+                    for raw_data in resp.iter_content(chunk_size=8192):
+                        if ctx.stop_event.is_set():
+                            flush_single_chunk_buffer(ctx, task)
+                            break
+                        if not raw_data:
+                            continue
+                        task.task_buffer.write(raw_data)
+                        data_len = len(raw_data)
+                        task.downloaded += data_len
+                        
+                        with ctx.global_lock:
+                            ctx.total_downloaded += data_len
+                        
+                        if task.task_buffer.getbuffer().nbytes >= max_cache_bytes:
+                            flush_single_chunk_buffer(ctx, task)
+                        
+                        pct = min(int((task.downloaded / total_chunk_len) * 100), 100)
+                        ui_push_chunk_progress(ctx, task.chunk_idx, task.downloaded, total_chunk_len)
+                        current_offset = task.start_byte + task.downloaded
+                        if task.downloaded >= total_chunk_len:
+                            chunk_finish_flag = True
+                            break
             
             except Exception as e:
                 retry_times += 1
@@ -331,6 +339,15 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                 print(f"分片{task.chunk_idx}异常 重试{retry_times}/{DEFAULT_RETRY}: {str(e)}")
                 ui_push_log(ctx, err_msg)
                 time.sleep(2)
+            
+            else:
+                # 无进展守卫：内层循环正常结束（未抛异常、未下满）
+                # 若本轮 Range 请求未推进任何字节，说明服务器少字节/提前截断且未报错，
+                # 按失败计次重试，避免“最后一点0B/s永远下不完”的无限空转死循环。
+                if not chunk_finish_flag and current_offset <= offset_before:
+                    retry_times += 1
+                    ui_push_log(ctx, f"分片{task.chunk_idx}本轮无数据推进 重试{retry_times}/{DEFAULT_RETRY}")
+                    time.sleep(1)
         
         
         flush_single_chunk_buffer(ctx, task)
@@ -480,6 +497,9 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     
 
     while not ctx.stop_event.is_set():
+        if any(t.failed for t in ctx.chunk_task_list):
+            ui_push_global_status(ctx, f"下载失败：{sum(1 for t in ctx.chunk_task_list if t.failed)} 个分片重试耗尽")
+            break
         all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
         if all_chunk_finished:
             break
@@ -589,7 +609,15 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         wx.CallAfter(show_complete_dialog_and_close)
     
     # 下载失败
-    elif not ctx.stop_event.is_set():
+    elif any(t.failed for t in ctx.chunk_task_list):
+        failed_cnt = sum(1 for t in ctx.chunk_task_list if t.failed)
+        ui_push_global_status(ctx, f"下载失败：{failed_cnt} 个分片重试耗尽")
+        ui_push_log(ctx, f"内存统计总字节:{ctx.total_downloaded}，磁盘真实大小:{final_file_size}，原始文件大小:{ctx.file_total_size}")
+        if ctx.uuid:
+            update_download_record_by_uuid(ctx.uuid, status="失败：分片重试耗尽", file_size=final_file_size)
+        if ctx.completion_callback:
+            wx.CallAfter(ctx.completion_callback, False, final_file_size, ctx.uuid)
+    elif not all_chunk_finished:
         if not file_complete or not binary_valid:
             ui_push_global_status(ctx, "警告：分片显示完成，但磁盘文件数据缺失/损坏！")
             ui_push_log(ctx, f"内存统计总字节:{ctx.total_downloaded}，磁盘真实大小:{final_file_size}，原始文件大小:{ctx.file_total_size}")
@@ -638,14 +666,22 @@ def init_download_context(
         global_lock=threading.Lock()
     )
     ctx.ndf_progress_path = os.path.join(save_path, f"{filename}_{PROGRESS_JSON_NAME}")
+    ctx._resume_json_path = resume_json_path
+    ctx.last_speed_calc_ts = 0.0
+    ctx.last_total_bytes = 0
+    ctx.total_downloaded = 0
+    ctx.file_obj = None
+    return ctx
+
+def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
     resume_data = {}
-    if resume_json_path and os.path.exists(resume_json_path):
-        resume_data = load_progress_json(resume_json_path)
+    if ctx._resume_json_path and os.path.exists(ctx._resume_json_path):
+        resume_data = load_progress_json(ctx._resume_json_path)
     try:
-        head_resp = requests.head(url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not disable_ssl)
+        head_resp = requests.head(ctx.url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl)
         ctx.file_total_size = int(head_resp.headers.get("content-length", 0))
         if ctx.file_total_size <= 0:
-            with requests.get(url, headers=ctx.headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=not disable_ssl) as r:
+            with requests.get(ctx.url, headers=ctx.headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl) as r:
                 ctx.file_total_size = int(r.headers.get("content-length", 0))
     except Exception:
         ctx.file_total_size = resume_data.get("file_total_size", 0)
@@ -661,12 +697,8 @@ def init_download_context(
             ) for c in resume_data["chunks"]
         ]
     else:
-        ctx.chunk_task_list = split_file_chunks(ctx.file_total_size, jobs, chunk_size)
-    ctx.last_speed_calc_ts = 0.0
-    ctx.last_total_bytes = 0
+        ctx.chunk_task_list = split_file_chunks(ctx.file_total_size, ctx.jobs, ctx.chunk_size)
     ctx.total_downloaded = sum(t.downloaded for t in ctx.chunk_task_list)
-    ctx.file_obj = None
-    return ctx
 
 # -------------------------- 下载完成弹窗UI --------------------------
 class DownloadCompleteDialog(wx.Dialog):
@@ -714,23 +746,59 @@ class DownloadFrame(wx.Frame):
         
         self.ctx = ctx
         self.ctx.ui_frame = self
-        self.grid_cell_pct: List[int] = [
-            100 if t.finished else min(100, int(t.downloaded / max(1, t.end_byte - t.start_byte + 1) * 100))
-            for t in ctx.chunk_task_list
-        ]
-        self.panel = wx.Panel(self)
-        self.panel.SetDoubleBuffered(True)
         self.cell_w = GRID_CELL_SIZE
         self.cell_h = GRID_CELL_SIZE
         
-
+        self.grid_cell_pct: List[int] = []
+        if ctx.chunk_task_list:
+            self.grid_cell_pct = [
+                100 if t.finished else min(100, int(t.downloaded / max(1, t.end_byte - t.start_byte + 1) * 100))
+                for t in ctx.chunk_task_list
+            ]
+        
+        self.panel = wx.Panel(self)
+        self.panel.SetDoubleBuffered(True)
+        self.is_initializing = True
         self.Bind(wx.EVT_SIZE, self.on_window_size)
         
         self.create_ui_layout()
         self.Bind(wx.EVT_CLOSE, self.on_window_close)
-        self.start_schedule_thread()
         self.Centre()
         self.Show()
+    
+    def setup_grid_and_start(self):
+        if not self.ctx.chunk_task_list:
+            wx.CallAfter(self._on_init_failed, "未获取到文件信息")
+            return
+        self.is_initializing = False
+        self.grid_cell_pct = [
+            100 if t.finished else min(100, int(t.downloaded / max(1, t.end_byte - t.start_byte + 1) * 100))
+            for t in self.ctx.chunk_task_list
+        ]
+        self._update_grid_after_init()
+        self.set_status_text(f"文件大小: {self.ctx.file_total_size / 1024 / 1024:.2f}MiB")
+        wx.CallAfter(self._start_download)
+    
+    def _update_grid_after_init(self):
+        if self.grid_cell_pct:
+            total_cols = max(1, 400 // self.cell_w)
+            total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
+            init_grid_w = total_cols * self.cell_w
+            init_grid_h = total_rows * self.cell_h
+            self.grid_scroll.SetVirtualSize((init_grid_w, init_grid_h))
+            self.grid_panel.SetMinSize((init_grid_w, init_grid_h))
+            self.grid_scroll.Layout()
+        self.panel.Layout()
+        self.grid_panel.Refresh()
+    
+    def _start_download(self):
+        self.start_schedule_thread()
+    
+    def _on_init_failed(self, msg: str):
+        self.set_status_text(msg)
+        self.add_log(msg)
+        self.btn_pause.Enable(False)
+        self.btn_export.Enable(False)
     
     def create_ui_layout(self):
         main_vbox = wx.BoxSizer(wx.VERTICAL)
@@ -739,7 +807,7 @@ class DownloadFrame(wx.Frame):
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         self.global_gauge = wx.Gauge(self.panel, range=100, size=(-1, 22))
         top_box.Add(self.global_gauge, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=10)
-        self.status_label = wx.StaticText(self.panel, label="准备初始化下载...")
+        self.status_label = wx.StaticText(self.panel, label="正在获取文件信息...")
         top_box.Add(self.status_label, proportion=0)
         main_vbox.Add(top_box, flag=wx.EXPAND | wx.ALL, border=8)
 
@@ -817,35 +885,42 @@ class DownloadFrame(wx.Frame):
         """绘制网格 - 自适应窗口大小"""
         dc = wx.AutoBufferedPaintDC(self.grid_panel)
         
-
         scroll_w, scroll_h = self.grid_scroll.GetClientSize()
         
-        if scroll_w == 0 or scroll_h == 0:
-            if self.grid_cell_pct:
-                total_cols = max(1, 400 // self.cell_w)
-                total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-                self.grid_scroll.SetVirtualSize((total_cols * self.cell_w, total_rows * self.cell_h))
-                self.grid_panel.SetMinSize((total_cols * self.cell_w, total_rows * self.cell_h))
+        dc.SetBrush(wx.WHITE_BRUSH)
+        dc.SetPen(wx.WHITE_PEN)
+        panel_w, panel_h = self.grid_panel.GetClientSize()
+        dc.DrawRectangle(0, 0, panel_w, panel_h)
+        
+        if self.is_initializing and not self.grid_cell_pct:
+            dc.SetTextForeground(wx.BLACK)
+            font = dc.GetFont()
+            font.SetPointSize(10)
+            dc.SetFont(font)
+            if panel_w > 0 and panel_h > 0:
+                text = "正在获取文件信息，请稍候..."
+                tw, th = dc.GetTextExtent(text)
+                dc.DrawText(text, (panel_w - tw) // 2, (panel_h - th) // 2)
             return
         
-
-        panel_w, panel_h = self.grid_panel.GetClientSize()
+        if not self.grid_cell_pct:
+            return
+        
+        if scroll_w == 0 or scroll_h == 0:
+            total_cols = max(1, 400 // self.cell_w)
+            total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
+            self.grid_scroll.SetVirtualSize((total_cols * self.cell_w, total_rows * self.cell_h))
+            self.grid_panel.SetMinSize((total_cols * self.cell_w, total_rows * self.cell_h))
+            return
         
         total_cols = max(1, scroll_w // self.cell_w)
         total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
         grid_w = total_cols * self.cell_w
         grid_h = total_rows * self.cell_h
         
-
         self.grid_scroll.SetVirtualSize((grid_w, grid_h))
-    
         self.grid_panel.SetMinSize((grid_w, max(grid_h, scroll_h)))
-
         self.grid_scroll.Layout()
-
-        dc.SetBrush(wx.WHITE_BRUSH)
-        dc.SetPen(wx.WHITE_PEN)
-        dc.DrawRectangle(0, 0, panel_w, panel_h)
   
         dc.SetPen(wx.GREY_PEN)
         for idx, pct in enumerate(self.grid_cell_pct):
@@ -1295,7 +1370,18 @@ def Download(
         speed_unit=SpeedUnit
     )
     app = wx.App(False)
-    DownloadFrame(ctx=download_ctx)
+    frame = DownloadFrame(ctx=download_ctx)
+    
+    def _bg_fetch_and_start():
+        try:
+            fetch_file_size_and_setup_chunks(download_ctx)
+            wx.CallAfter(frame.setup_grid_and_start)
+        except Exception as e:
+            err_msg = f"获取文件信息失败: {str(e)}"
+            print(err_msg)
+            wx.CallAfter(frame._on_init_failed, err_msg)
+    
+    threading.Thread(target=_bg_fetch_and_start, daemon=True).start()
     app.MainLoop()
 
 # -------------------------- 断点续传恢复入口 --------------------------
@@ -1477,6 +1563,7 @@ def ResumeDownload(
         uuid=uuid,
         speed_unit=SpeedUnit
     )
+    fetch_file_size_and_setup_chunks(download_ctx)
     
     if ResumePath.lower().endswith(NDF_SUFFIX):
         download_ctx.original_ndf_path = ResumePath

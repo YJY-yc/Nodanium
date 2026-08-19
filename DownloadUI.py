@@ -9,8 +9,14 @@ import datetime
 import logging
 import platform
 import uuid
-import subprocess 
+import subprocess
+from urllib.parse import urlparse
 from FileIcon import get_file_icon, get_fallback_icon
+
+def get_filename_from_url(url):
+    parsed = urlparse(url)
+    path = parsed.path or url
+    return os.path.basename(path) or "download_file"
 # 跨平台数据目录配置
 def open_file_or_folder(file_path):
     """跨平台打开文件或文件夹"""
@@ -19,11 +25,9 @@ def open_file_or_folder(file_path):
     try:
         if sys_type == "Windows":
             os.startfile(file_path)
-        elif sys_type == "Darwin":
-            # macOS 使用 open 命令
-            subprocess.run(['open', file_path], check=True)
+  
         else:
-            # Linux 使用 xdg-open 命令
+
             subprocess.run(['xdg-open', file_path], check=True)
         return True
     except subprocess.CalledProcessError as e:
@@ -477,7 +481,7 @@ def on_menu_show_items(event, list_ctrl):
                                 
                            
                                 if not filename and url:
-                                    filename = os.path.basename(url) or "download_file"
+                                    filename = get_filename_from_url(url)
                                 
                                 export_data.append({
                                     "url": url,
@@ -618,6 +622,15 @@ def on_new_download(parent, list_ctrl, image_list):
     thread_sizer.Add(thread_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     thread_sizer.Add(thread_count_spin, 0, wx.ALL, 5)
     single_sizer.Add(thread_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
+    chunk_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    chunk_label = wx.StaticText(single_panel, label="分块大小:")
+    chunk_size_text = wx.TextCtrl(single_panel, value="1", size=(80, -1))
+    chunk_unit_combo = wx.ComboBox(single_panel, choices=["B", "KB", "MB", "GB"], style=wx.CB_READONLY, value="MB")
+    chunk_sizer.Add(chunk_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    chunk_sizer.Add(chunk_size_text, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    chunk_sizer.Add(chunk_unit_combo, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    single_sizer.Add(chunk_sizer, 0, wx.EXPAND | wx.ALL, 5)
     
     single_panel.SetSizer(single_sizer)
     notebook.AddPage(single_panel, "单文件下载")
@@ -655,8 +668,16 @@ def on_new_download(parent, list_ctrl, image_list):
     batch_thread_sizer.Add(batch_thread_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     batch_thread_sizer.Add(batch_thread_spin, 0, wx.ALL, 5)
     batch_sizer.Add(batch_thread_sizer, 0, wx.EXPAND | wx.ALL, 5)
-    
 
+    batch_chunk_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    batch_chunk_label = wx.StaticText(batch_panel, label="分块大小:")
+    batch_chunk_size_text = wx.TextCtrl(batch_panel, value="1", size=(80, -1))
+    batch_chunk_unit_combo = wx.ComboBox(batch_panel, choices=["B", "KB", "MB", "GB"], style=wx.CB_READONLY, value="MB")
+    batch_chunk_sizer.Add(batch_chunk_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    batch_chunk_sizer.Add(batch_chunk_size_text, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    batch_chunk_sizer.Add(batch_chunk_unit_combo, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    batch_sizer.Add(batch_chunk_sizer, 0, wx.EXPAND | wx.ALL, 5)
+    
     undownloaded_list = wx.ListBox(batch_panel, style=wx.LB_SINGLE)
     batch_sizer.Add(undownloaded_list, 1, wx.ALL | wx.EXPAND, 5)
     
@@ -676,11 +697,20 @@ def on_new_download(parent, list_ctrl, image_list):
 
     batch_urls = []
     
+    def get_chunk_size_bytes(size_ctrl, unit_ctrl):
+        try:
+            val = float(size_ctrl.GetValue().strip())
+            unit = unit_ctrl.GetValue()
+            multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+            return max(int(val * multipliers.get(unit, 1024**2)), 1)
+        except:
+            return 1024 * 1024
+
     def on_url_enter(event):
         url = url_text.GetValue().strip()
         if url:
     
-            filename = os.path.basename(url) or "download_file"
+            filename = get_filename_from_url(url)
             filename_text.SetValue(filename)
     
     def on_browse_click(event):
@@ -741,7 +771,7 @@ def on_new_download(parent, list_ctrl, image_list):
         url = url_text.GetValue().strip()
         if url and not filename_text.GetValue():
      
-            filename = os.path.basename(url) or "download_file"
+            filename = get_filename_from_url(url)
             filename_text.SetValue(filename)
     
     url_text.Bind(wx.EVT_TEXT, on_url_change)
@@ -755,6 +785,7 @@ def on_new_download(parent, list_ctrl, image_list):
             filename = filename_text.GetValue().strip()
             save_path = path_text.GetValue().strip()
             thread_count = thread_count_spin.GetValue()
+            chunk_size = get_chunk_size_bytes(chunk_size_text, chunk_unit_combo)
             
             if url and filename and save_path:
        
@@ -799,7 +830,7 @@ def on_new_download(parent, list_ctrl, image_list):
                         import NewDownloadCore
                 
                         wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename, 
-                                    Jobs=thread_count, Cache=5, Size=1024*1024, 
+                                    Jobs=thread_count, Cache=5, Size=chunk_size, 
                                     disable_ssl=True, completion_callback=on_download_completed)
                     except Exception as e:
                     
@@ -826,6 +857,7 @@ def on_new_download(parent, list_ctrl, image_list):
             main_site = main_site_text.GetValue().strip()
             thread_count = batch_thread_spin.GetValue()
             folder_name = folder_text.GetValue().strip()
+            batch_chunk_size = get_chunk_size_bytes(batch_chunk_size_text, batch_chunk_unit_combo)
             
             if not folder_name:
                 wx.MessageBox("请输入文件夹名称", "错误", wx.OK | wx.ICON_ERROR)
@@ -848,7 +880,8 @@ def on_new_download(parent, list_ctrl, image_list):
                     default_save_path,
                     folder_name,
                     list_ctrl,  
-                    image_list 
+                    image_list,
+                    chunk_size=batch_chunk_size
                 )
             except Exception as e:
                 wx.MessageBox(f"启动批量下载失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
