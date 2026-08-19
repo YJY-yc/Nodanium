@@ -1,4 +1,25 @@
 # Nodanium #
+
+<div align="center">
+
+[![Release](https://img.shields.io/github/v/release/YJY-yc/Nodanium?style=for-the-badge&logo=github&color=4e7eb8)](https://github.com/YJY-yc/Nodanium/releases)
+[![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white&color=3776ab)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/YJY-yc/Nodanium?style=for-the-badge&label=License&color=green)](LICENSE)
+
+[![GitHub Stars](https://img.shields.io/github/stars/YJY-yc/Nodanium?style=for-the-badge&logo=github&color=e3b341&label=Stars)](https://github.com/YJY-yc/Nodanium/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/YJY-yc/Nodanium?style=for-the-badge&logo=github&color=blue&label=Forks)](https://github.com/YJY-yc/Nodanium/network)
+[![GitHub Issues](https://img.shields.io/github/issues/YJY-yc/Nodanium?style=for-the-badge&logo=github&color=d73a4a)](https://github.com/YJY-yc/Nodanium/issues)
+[![GitHub Issues Closed](https://img.shields.io/github/issues-closed/YJY-yc/Nodanium?style=for-the-badge&logo=github&color=4caf50)](https://github.com/YJY-yc/Nodanium/issues)
+
+[![Release Downloads](https://img.shields.io/github/downloads/YJY-yc/Nodanium/total?style=for-the-badge&logo=github&color=00c896&label=下载量)](https://github.com/YJY-yc/Nodanium/releases)
+
+[![Windows](https://img.shields.io/badge/-Windows-0078d6?style=for-the-badge&logo=windows&logoColor=white)](#)
+[![Linux](https://img.shields.io/badge/-Linux-fcc624?style=for-the-badge&logo=linux&logoColor=black)](#)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/YJY-yc/Nodanium?style=for-the-badge&color=9b59b6)](https://github.com/YJY-yc/Nodanium/commits/main)
+[![Last Commit](https://img.shields.io/github/last-commit/YJY-yc/Nodanium?style=for-the-badge&color=informational)](https://github.com/YJY-yc/Nodanium/commits/main)
+
+</div>
+
 ## 一、项目介绍 ##
 Nodanium(钒合金)是一个用Python开发的，跨Windows/Linux的网络工具。包括下载，爬取，分析，处理等网络操作。
 
