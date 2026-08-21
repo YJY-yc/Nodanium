@@ -521,10 +521,7 @@ def download_file(url, download_dir, add_single_record=True, filename="", chunk_
                     f.write(chunk)
         
         print(f"文件保存成功: {local_path}")
-        try:
-            wx.CallAfter(show_download_complete_notification, local_path)
-        except Exception:
-            pass
+        
         
 
         if add_single_record:
@@ -544,15 +541,7 @@ def download_file(url, download_dir, add_single_record=True, filename="", chunk_
     except Exception as e:
         print(f"未知错误: {url} 错误: {str(e)}")
         return False
-def show_download_complete_notification(local_path):
-    toast = Notification(
-        app_id="Nodanium",
-        title="下载完成",
-        msg=f"文件已保存到：{local_path}",
-        duration="long"
-    )
-    toast.set_audio(audio.Default, loop=False)
-    toast.show()
+
 
 if __name__ == "__main__":
     create_download_app()

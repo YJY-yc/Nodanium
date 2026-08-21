@@ -13,6 +13,21 @@ import platform
 sys_type = platform.system()
 
 
+# 始终以程序(exe)所在目录作为工作目录，避免开机自启时工作目录改变导致资源加载失败
+if getattr(sys, 'frozen', False):
+    # 打包成 exe 运行时，exe 所在目录即程序目录
+    _program_dir = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    # 以 Python 脚本运行时，脚本所在目录即程序目录
+    _program_dir = os.path.dirname(os.path.abspath(__file__))
+try:
+    os.chdir(_program_dir)
+    # 将程序目录加入模块搜索路径，确保相对导入有效
+    if sys.path and _program_dir not in sys.path:
+        sys.path.insert(0, _program_dir)
+except Exception as e:
+    logging.warning(f"无法切换到程序目录: {e}")
+
 
 #=启动参数=
 def print_help():
@@ -21,7 +36,7 @@ def print_help():
 选项:
   -v, --version           显示版本信息
   -h, --help              显示此帮助信息
-  -c, --clear             清除数据目录
+  -c, --clear             清除数据目录(-y 直接清除)
   -s, --silent            静默模式启动
   -r, --resume=<路径>     从 NDF/JSON 文件恢复下载
     --path=<保存路径>      覆盖保存目录（可选）
@@ -282,15 +297,14 @@ if len(sys.argv) > 1:
         parsed_args["resume"] = ndf_file_arg
     
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.6.0.2\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 3.6.0.3\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()
         sys.exit(0)
     elif "c" in parsed_args or "clear" in parsed_args:
-        print("确定要清除数据目录吗？(y/n)")
-        choice = input()
-        if choice.lower() == "y":
+        if "y" in parsed_args:
+           
             if sys_type == "Windows":
                 roaming_path = os.getenv('APPDATA') + ''
                 target_folder = os.path.join(roaming_path, "Nodanium")
@@ -306,7 +320,28 @@ if len(sys.argv) > 1:
                     print("数据目录不存在")
             except Exception as e:
                 print(f"清除数据目录失败: {str(e)}")
-        sys.exit(0)
+            sys.exit(0)
+                
+        else:
+            print("确定要清除数据目录吗？(y/n)")
+            choice = input()
+            if choice.lower() == "y":
+                if sys_type == "Windows":
+                    roaming_path = os.getenv('APPDATA') + ''
+                    target_folder = os.path.join(roaming_path, "Nodanium")
+                elif sys_type == "Linux":
+                    home_path = os.path.expanduser("~")
+                    target_folder = os.path.join(home_path, ".Nodanium")
+                try:
+                    if os.path.exists(target_folder):
+                        import shutil
+                        shutil.rmtree(target_folder)
+                        print("数据目录已清除")
+                    else:
+                        print("数据目录不存在")
+                except Exception as e:
+                    print(f"清除数据目录失败: {str(e)}")
+            sys.exit(0)
     elif "r" in parsed_args or "resume" in parsed_args:
         resume_path = parsed_args.get("r") or parsed_args.get("resume")
         if not resume_path or resume_path is True:
@@ -341,7 +376,6 @@ if len(sys.argv) > 1:
         Cache = float(parsed_args.get("cache", 10))
         Run = parsed_args.get("run", None)
 
-        # 解析 --header=JSON 成字典（兼容已转义或纯字符串两种写法）
         Header = {}
         if header_raw:
             h = header_raw.strip()

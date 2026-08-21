@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.6.0.2"
+vision = "3.6.0.3"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -370,7 +370,7 @@ def create_tray_icon(frame):
         print("正在创建托盘图标...")
         logging.info("正在创建托盘图标...")
  
-        icon_path = 'icons/Admin_icon.png' if Adminchaker.is_admin() else 'icons/ANT_icon.png'
+        icon_path = 'icons/Admin_icon.png' if Adminchaker.is_admin() else 'icons/Nodanium.png'
         if not os.path.exists(icon_path):
             print(f"错误：图标文件不存在: {icon_path}")
             logging.error(f"错误：图标文件不存在: {icon_path}")
@@ -384,7 +384,7 @@ def create_tray_icon(frame):
             tray.SetIcon(icon, "Nodanium(管理员)")
             print("托盘图标设置成功")
         else:
-            icon = wx.Icon('icons/ANT_icon.png', wx.BITMAP_TYPE_PNG)
+            icon = wx.Icon('icons/Nodanium.png', wx.BITMAP_TYPE_PNG)
             print("普通图标加载成功")
             tray = wx.adv.TaskBarIcon()
             print("TaskBarIcon 创建成功")
@@ -510,39 +510,14 @@ def Window(silence=False):
         except Exception as e:
             logging.warning(f"高DPI设置失败: {str(e)}")
     il = wx.ImageList(32, 32)
+    _icon_cache = {}
 
-    bmp1 = wx.Bitmap('icons/path_to_icon1.png')
-    bmp2 = wx.Bitmap('icons/path_to_icon2.png')
-    bmp3 = wx.Bitmap('icons/path_to_icon3.png')
-    bmp4 = wx.Bitmap('icons/path_to_icon4.png')
-    bmp5 = wx.Bitmap('icons/path_to_icon5.png')
-    bmp6 = wx.Bitmap('icons/path_to_icon6.png')
-    bmp7 = wx.Bitmap('icons/path_to_icon7.png')
-    bmp8 = wx.Bitmap('icons/home.png') 
-    bmp9 = wx.Bitmap('icons/arrow.png')  
-    bmp11 = wx.Bitmap('icons/DNS.png')  
-    bmp10 = wx.Bitmap('icons/path_to_icon8.png')
-    bmp12 = wx.Bitmap('icons/path_to_icon9.png')
-    bmp13 = wx.Bitmap('icons/path_to_icon10.png')
-    bmp14 = wx.Bitmap('icons/path_to_icon11.png')
-    bmp15 = wx.Bitmap('icons/Plugin.png')
-  
-    il.Add(bmp1)
-    il.Add(bmp2)
-    il.Add(bmp3)
-    il.Add(bmp4)
-    il.Add(bmp5)
-    il.Add(bmp6)
-    il.Add(bmp7)
-    il.Add(bmp8)
-    il.Add(bmp9)
-    il.Add(bmp10)
-    il.Add(bmp11)
-    il.Add(bmp12)
-    il.Add(bmp13)
-    il.Add(bmp14)
-    il.Add(bmp15)
-    icon = wx.Icon('icons/path_to_icon1.png', wx.BITMAP_TYPE_PNG)
+    def _icon_id(path):
+        if path not in _icon_cache:
+            _icon_cache[path] = il.Add(wx.Bitmap(path))
+        return _icon_cache[path]
+
+    icon = wx.Icon('icons/home.png', wx.BITMAP_TYPE_PNG)
 
     global frame 
     if Adminchaker.is_admin(): 
@@ -565,13 +540,13 @@ def Window(silence=False):
                   wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, 
                   faceName=fontname))
 
-    # === 修复左树菜单：父节点点击仅展开/收起子节点，不进入空白页 ===
+    
     _nav_tree = listbook.GetTreeCtrl()
     def _on_tree_sel_changing(event):
         try:
             item = event.GetItem()
             if item.IsOk() and _nav_tree.ItemHasChildren(item):
-                # 父节点：否决页面切换，仅展开/收起
+                
                 event.Veto()
                 if _nav_tree.IsExpanded(item):
                     _nav_tree.Collapse(item)
@@ -583,13 +558,12 @@ def Window(silence=False):
         event.Skip()
     _nav_tree.Bind(wx.EVT_TREE_SEL_CHANGING, _on_tree_sel_changing)
 
-    # === 修复左树面板：支持拖拽调整宽度，并保存到配置 ===
+
     _sidebar_state = {'active': False}
     SIDEBAR_MIN = 90
     SIDEBAR_MAX = 380
     _cursor_resize = wx.Cursor(wx.CURSOR_SIZEWE)
 
-    # 一个独立、可见的拖拽分隔条，覆盖在树与内容之间的边界上
     _resize_bar = wx.Panel(listbook)
     _resize_bar.SetBackgroundColour(wx.Colour(170, 170, 170))
     _resize_bar.SetCursor(_cursor_resize)
@@ -624,7 +598,7 @@ def Window(silence=False):
             event.Skip()
             return
         try:
-            # 鼠标在 listbook 内的横坐标 → 目标宽度
+      
             mx = _resize_bar.ScreenToClient(wx.GetMousePosition()).x
             bar_x = _resize_bar.GetPosition().x
             new_w = max(SIDEBAR_MIN, min(SIDEBAR_MAX, bar_x + mx))
@@ -632,8 +606,7 @@ def Window(silence=False):
             _nav_tree.SetSize((new_w, h))
             _nav_tree.SetMinSize((new_w, 10))
             _position_resize_bar()
-            # 关键：触发 Treebook 内部重新布局，让右侧面板即时跟随左树宽度，
-            # 而不是只改变树宽度遗留灰色区域
+   
             listbook.SendSizeEvent()
         except Exception as e:
             logging.error(f"调整左树宽度失败: {e}")
@@ -647,7 +620,7 @@ def Window(silence=False):
                     _resize_bar.ReleaseMouse()
             except Exception:
                 pass
-            # 保存宽度到配置
+           
             try:
                 new_w = _nav_tree.GetSize().width
                 if new_w >= SIDEBAR_MIN:
@@ -701,26 +674,26 @@ def Window(silence=False):
     panel14.SetBackgroundColour(wx.Colour(255, 255, 255))
 
 
-    listbook.AddPage(panel0, "主页", imageId=7)
+    listbook.AddPage(panel0, "主页", imageId=_icon_id('icons/home.png'))
 
-    listbook.AddPage(panel13, "下载功能", imageId=0)
+    listbook.AddPage(panel13, "下载管理", imageId=_icon_id('icons/download.png'))
     
 
-    # 网络工具（父节点）
-    listbook.AddPage(wx.Panel(listbook), "网络工具", imageId=2)
-    listbook.AddSubPage(panel3, "网页筛选", imageId=2) 
-    listbook.AddSubPage(panel9, "DNS编辑", imageId=10)  
-    listbook.AddSubPage(panel10, "Ping", imageId=11) 
-
+    # 网络工具
+    listbook.AddPage(wx.Panel(listbook), "网络工具", imageId=_icon_id('icons/tool.png'))
+    listbook.AddSubPage(panel3, "网页筛选", imageId=_icon_id('icons/analyse.png')) 
+    listbook.AddSubPage(panel9, "DNS编辑", imageId=_icon_id('icons/DNS.png'))  
+    listbook.AddSubPage(panel10, "Ping", imageId=_icon_id('icons/ping.png')) 
     
     
-    listbook.AddSubPage(panel11, "文件服务", imageId=12)
-    listbook.AddSubPage(panel6, "转发文件", imageId=5)  
-    listbook.AddSubPage(panel14, "流量转盘", imageId=4)  
+    
+    listbook.AddSubPage(panel11, "文件服务", imageId=_icon_id('icons/filesever.png'))
+    listbook.AddSubPage(panel6, "转发文件", imageId=_icon_id('icons/path_to_icon6.png'))  
+    listbook.AddSubPage(panel14, "流量转盘", imageId=_icon_id('icons/traffic.png'))  
     # 管理功能（父节点）
-    listbook.AddPage(wx.Panel(listbook), "管理功能", imageId=4)
-    listbook.AddSubPage(panel12, "端口管理器", imageId=13) 
-    listbook.AddSubPage(panel13, "下载管理", imageId=5)  
+    listbook.AddPage(wx.Panel(listbook), "管理功能", imageId=_icon_id('icons/manage.png'))
+    listbook.AddSubPage(panel12, "端口管理器", imageId=_icon_id('icons/path_to_icon11.png')) 
+    listbook.AddSubPage(panel13, "下载管理", imageId=_icon_id('icons/download.png'))  
     
     
     try:
@@ -740,10 +713,10 @@ def Window(silence=False):
 
     #插件加载
     if plugins:
-        listbook.AddPage(wx.Panel(listbook), "插件", imageId=1)
+        listbook.AddPage(wx.Panel(listbook), "插件", imageId=_icon_id('icons/Plugin.png'))
         try:
             if "ChatPort" in plugins:
-                listbook.AddSubPage(panel7, "内网通讯", imageId=6)
+                listbook.AddSubPage(panel7, "内网通讯", imageId=_icon_id('icons/path_to_icon7.png'))
                 ChatPort.init_chat_ui(panel7,frame)
 
         except Exception as e:
@@ -761,22 +734,21 @@ def Window(silence=False):
                     plugin_panel.SetBackgroundColour(wx.Colour(255, 255, 255))
                    
                     icon_path = os.path.join("Plugins", f"{plugin_name}.png")
-                    image_id = 14 
                     
                     
                     if os.path.exists(icon_path):
                         try:
-                            bitmap = wx.Bitmap(icon_path, wx.BITMAP_TYPE_PNG)
-                            if bitmap.IsOk():
-                                image_id = listbook.GetImageList().Add(bitmap)
-                                
-                                logging.info(f'为 {plugin_name} 插件加载了自定义图标')
+                            img_id = _icon_id(icon_path)
+                            logging.info(f'为 {plugin_name} 插件加载了自定义图标')
                         except Exception as e:
                             logging.warning(f'加载 {plugin_name} 插件图标失败: {e}')
                             print(f"加载 {plugin_name} 插件图标失败: {e}")
+                            img_id = _icon_id('icons/Plugin.png')
+                    else:
+                        img_id = _icon_id('icons/Plugin.png')
                     
-                    # 创建页面，使用对应图标
-                    listbook.AddSubPage(plugin_panel, plugin_name, imageId=image_id)
+                    # 创建页面
+                    listbook.AddSubPage(plugin_panel, plugin_name, imageId=img_id)
                     
                     
                     if hasattr(plugin_module, 'MainPanel'):
@@ -808,7 +780,7 @@ def Window(silence=False):
     logging.info('插件已完成加载')
 
 
-    listbook.AddPage(panel4, "关于...", imageId=3)
+    listbook.AddPage(panel4, "关于...", imageId=_icon_id('icons/path_to_icon4.png'))
 
     panel3_sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -846,60 +818,103 @@ def Window(silence=False):
     
     panel3.SetSizer(panel3_sizer)
     panel4_sizer = wx.BoxSizer(wx.VERTICAL)
-    
-  
-    about_title = wx.StaticText(panel4, label="关于软件")
-    about_title.SetFont(wx.Font(FontSize + 5, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName=fontname))
-    panel4_sizer.Add(about_title, 0, wx.ALL | wx.ALIGN_LEFT, 10)
-    
+    panel4_sizer.AddStretchSpacer(1)
 
-    about_info = wx.StaticText(panel4, label=f"作者: YJY-yc\n版本: {vision}\n文件保存路径: {dirs}\n默认端口: {str(config.get('default_port', 1524))}")
-    about_info.SetFont(wx.Font(FontSize - 2, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
-    panel4_sizer.Add(about_info, 0, wx.ALL | wx.ALIGN_LEFT, 10)
-    
+    icon_bitmap = None
+    if os.path.exists("icons/Nodanium.png"):
+        icon_image = wx.Image("icons/Nodanium.png", wx.BITMAP_TYPE_PNG)
+        icon_bitmap = wx.StaticBitmap(panel4, -1, wx.Bitmap(icon_image.Scale(72, 72, wx.IMAGE_QUALITY_HIGH)))
+        panel4_sizer.Add(icon_bitmap, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 5)
+
+    about_title = wx.StaticText(panel4, label="Nodanium")
+    about_title.SetFont(wx.Font(FontSize + 2, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName=fontname))
+    panel4_sizer.Add(about_title, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 3)
+
+    version_label = wx.StaticText(panel4, label=f"版本 {vision}")
+    version_label.SetForegroundColour(wx.Colour(120, 120, 120))
+    version_label.SetFont(wx.Font(FontSize - 2, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
+    panel4_sizer.Add(version_label, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 3)
+
+    separator = wx.StaticLine(panel4, style=wx.LI_HORIZONTAL)
+    panel4_sizer.Add(separator, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_CENTER_HORIZONTAL, 1)
+
+    info_sizer = wx.GridBagSizer(hgap=10, vgap=4)
+
+    def make_info_label(parent, text):
+        lbl = wx.StaticText(parent, label=text)
+        lbl.SetForegroundColour(wx.Colour(100, 100, 100))
+        lbl.SetFont(wx.Font(FontSize - 4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
+        return lbl
+
+    def make_info_value(parent, text):
+        lbl = wx.StaticText(parent, label=text)
+        lbl.SetForegroundColour(wx.Colour(40, 40, 40))
+        lbl.SetFont(wx.Font(FontSize - 4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
+        return lbl
+
+    info_rows = [
+        ("作者", "YJY-yc"),
+        ("版本", vision),
+        ("Python", sys.version.split()[0]),
+        ("平台", f"{platform.system()} {platform.release()}"),
+        ("架构", platform.machine()),
+        ("保存路径", dirs),
+        ("默认端口", str(config.get('default_port', 1524))),
+    ]
+
+    for i, (label, value) in enumerate(info_rows):
+        info_sizer.Add(make_info_label(panel4, label), (i, 0), (1, 1), wx.ALIGN_RIGHT | wx.ALIGN_CENTER_VERTICAL, 3)
+        info_sizer.Add(make_info_value(panel4, value), (i, 1), (1, 1), wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL, 3)
+
+    info_sizer.AddGrowableCol(1, 1)
+    panel4_sizer.Add(info_sizer, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 8)
 
     link_sizer = wx.BoxSizer(wx.HORIZONTAL)
-    
-    update_link = LinkButton.create_link_button(panel4, "https://yjymain.rth1.xyz/", "icons/link_small.png", "网站链接", (100, 30))
-    github_link = LinkButton.create_link_button(panel4, "https://github.com/YJY-yc/Nodanium", "icons/link_small.png", "GitHub链接", (130, 30))
-    
+
+    link_size = (110, 28)
+    update_link = LinkButton.create_link_button(panel4, "https://yjymain.rth1.xyz/", "icons/link_small.png", "网站链接", link_size)
+    github_link = LinkButton.create_link_button(panel4, "https://github.com/YJY-yc/Nodanium", "icons/link_small.png", "GitHub链接", link_size)
+
     if update_link:
-        link_sizer.Add(update_link, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        link_sizer.Add(update_link, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
     if github_link:
-        link_sizer.Add(github_link, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-    
-    panel4_sizer.Add(link_sizer, 0, wx.ALL | wx.ALIGN_LEFT, 10)
-    
+        link_sizer.Add(github_link, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+
+    panel4_sizer.Add(link_sizer, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 8)
 
     button_sizer = wx.BoxSizer(wx.HORIZONTAL)
-    
-    network_info_button = wx.Button(panel4, label="显示网络信息", size=(160, 40))
-    network_info_button.SetFont(wx.Font(FontSize - 4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
-    button_sizer.Add(network_info_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-    
-    download_button_op = wx.Button(panel4, label="首选项", size=SizeButton)
-    download_button_op.SetFont(wx.Font(FontSize - 4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname))
-    button_sizer.Add(download_button_op, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-    
-    panel4_sizer.Add(button_sizer, 0, wx.ALL | wx.ALIGN_LEFT, 10)
-    
 
-    network_info_text = wx.TextCtrl(panel4, size=(-1, 150), style=wx.TE_MULTILINE | wx.TE_READONLY)
-    panel4_sizer.Add(network_info_text, 1, wx.ALL | wx.EXPAND, 10)
-    
+    btn_size = (130, 32)
+    btn_font = wx.Font(FontSize - 4, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName=fontname)
+
+    network_info_button = wx.Button(panel4, label="显示网络信息", size=btn_size)
+    network_info_button.SetFont(btn_font)
+    button_sizer.Add(network_info_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+
+    download_button_op = wx.Button(panel4, label="首选项", size=btn_size)
+    download_button_op.SetFont(btn_font)
+    button_sizer.Add(download_button_op, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+
+    panel4_sizer.Add(button_sizer, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 3)
+
+    network_info_text = wx.TextCtrl(panel4, size=(-1, 120), style=wx.TE_MULTILINE | wx.TE_READONLY)
+    panel4_sizer.Add(network_info_text, 1, wx.ALL | wx.EXPAND, 8)
+
+    panel4_sizer.AddStretchSpacer(1)
+
     def on_network_info(event):
         import socket
         import subprocess
         info = ""
-        
+
         hostname = socket.gethostname()
         info += f"主机名: {hostname}\n\n"
-        
+
         addrinfo = socket.getaddrinfo(hostname, None)
         info += "IP地址:\n"
         for addr in addrinfo:
             info += f"  {addr[4][0]}\n"
-      
+
         try:
             sys_type = platform.system()
             if sys_type == "Windows":
@@ -910,30 +925,29 @@ def Window(silence=False):
             info += result.stdout
         except:
             info += "\n无法获取网关信息"
-        
+
         network_info_text.SetValue(info)
 
     network_info_button.Bind(wx.EVT_BUTTON, on_network_info)
-    
+
     def on_update_link(event):
         import webbrowser
         webbrowser.open("https://yjymain.rth1.xyz/")
-    
+
     if update_link:
         update_link.Bind(wx.EVT_BUTTON, on_update_link)
-    
+
     download_button_op.Bind(wx.EVT_BUTTON, options.options)
-    
- 
+
     panel4.SetSizer(panel4_sizer)
 
-    panel0.SetBackgroundColour(wx.Colour(243, 243, 243))  # VS Code浅色主题背景
+    panel0.SetBackgroundColour(wx.Colour(243, 243, 243))  
     
     main_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
  
     left_panel = wx.Panel(panel0)
-    left_panel.SetBackgroundColour(wx.Colour(255, 255, 255))  # 白色卡片
+    left_panel.SetBackgroundColour(wx.Colour(255, 255, 255)) 
     left_sizer = wx.BoxSizer(wx.VERTICAL)
     
  
@@ -949,7 +963,7 @@ def Window(silence=False):
     left_sizer.Add(subtitle_text, 0, wx.LEFT | wx.BOTTOM, 30)
     
 
-    update_title = wx.StaticText(left_panel, label="更新信息")
+    update_title = wx.StaticText(left_panel, label="软件信息")
     update_title.SetForegroundColour(wx.Colour(50, 50, 50))
     update_title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_SEMIBOLD))
     left_sizer.Add(update_title, 0, wx.LEFT | wx.BOTTOM, 10)
@@ -1204,7 +1218,11 @@ def Window(silence=False):
     try:
             
         for record in load_history():
-            history_list.Append([record['url'], record['filename'], record['time']])
+            history_list.Append([
+                record.get('url', ''),
+                record.get('filename', ''),
+                record.get('time', ''),
+            ])
     except Exception as e:
         print(f"加载历史记录时出错: {e}")
         logging.error(f"加载历史记录时出错: {e}")
@@ -1221,4 +1239,3 @@ def Window(silence=False):
         frame.Show()
 
     app.MainLoop()
-

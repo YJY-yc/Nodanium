@@ -139,7 +139,7 @@ class FileRequestHandler(SimpleHTTPRequestHandler):
             "</div>",
             "<h2>文件列表</h2>",
             "<ul class='file-list'>",
-            "</a>由软件ANTKit提供文件服务支持</a>"
+           
         ]
         
  
@@ -350,9 +350,9 @@ class FileShareServer:
             ip_addresses.append(ip_address)
         for ip in ip_addresses:
             wx.CallAfter(self.panel.log_text.AppendText, f"{ip}:{self.port}\n")
-        wx.CallAfter(self.panel.log_text.AppendText, f"已列出所有共享的网络。在同一网络的设备可以通过输入上述链接访问(一般只有一个链接可以被其他设备访问，可以每一个都试一遍，IP部分末尾不是1的更可能)\n") 
+        wx.CallAfter(self.panel.log_text.AppendText, f"已列出所有共享的网络。)\n") 
         if open_browser:
-            # 打开浏览器
+           
             hostname = socket.gethostname()
             webbrowser.open(f"http://localhost:{self.port}")
         return True
@@ -420,9 +420,9 @@ class FileSharePanel(wx.Panel):
         
 
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.start_btn = wx.Button(self, label="启动服务器")
+        self.start_btn = wx.Button(self, label="启动服务")
         self.start_btn.SetBitmap(wx.Bitmap("./icons/run.png"), wx.LEFT)
-        self.stop_btn = wx.Button(self, label="停止服务器")
+        self.stop_btn = wx.Button(self, label="停止服务")
         self.stop_btn.SetBitmap(wx.Bitmap("./icons/stop.png"), wx.LEFT)
         self.stop_btn.Disable()
         self.start_btn.Bind(wx.EVT_BUTTON, self.on_start_server)
@@ -436,7 +436,7 @@ class FileSharePanel(wx.Panel):
         setting_sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER|wx.ALL, 5)
         
 
-        self.status_text = wx.StaticText(self, label="服务器未运行")
+        self.status_text = wx.StaticText(self, label="服务未运行")
         self.url_text = wx.StaticText(self, label="访问URL: ")
         
         self.log_text = wx.TextCtrl(self, style=wx.TE_MULTILINE|wx.TE_READONLY)
@@ -495,7 +495,7 @@ class FileSharePanel(wx.Panel):
         if self.server:
             
             self.server.stop()
-            self.status_text.SetLabel("服务器已停止")
+            self.status_text.SetLabel("服务已停止")
             self.start_btn.Enable()
             self.stop_btn.Disable()
     

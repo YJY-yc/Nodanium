@@ -166,46 +166,11 @@ def options(event):
 
     add_static_box(window, window_sizer, "界面设置", window_content)
 
-    # ========================== 文件 ==========================
-    file_panel, file_sizer = make_scroll_panel(notebook)
-
-    path_label = wx.StaticText(file_panel, label="当前下载路径:")
-    path_text = wx.TextCtrl(file_panel, value=dirs)
-
-    def on_browse(event):
-        dialog = wx.DirDialog(file_panel, "选择下载文件夹",
-                              style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
-        if dialog.ShowModal() == wx.ID_OK:
-            new_path = dialog.GetPath()
-            path_text.SetValue(new_path)
-            global dirs
-            dirs = new_path + "\\"
-            with open(os.path.join(target_folder, "dir.txt"), "w") as f:
-                f.write(dirs)
-        dialog.Destroy()
-
-    browse_button = wx.Button(file_panel, label="浏览...")
-    link_to_2 = wx.Button(file_panel, label="检查文件路径",
-                          style=wx.BORDER_NONE, size=(140, 30))
-    link_to_2.SetForegroundColour(wx.Colour(0, 0, 255))
-    link_to_2.SetBackgroundColour(wx.Colour(249, 249, 249))
-    link_to_2.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-    link_to_2.SetCursor(wx.Cursor(wx.CURSOR_HAND))
-    link_to_2.Bind(wx.EVT_BUTTON, on_go_to_file)
-    browse_button.Bind(wx.EVT_BUTTON, on_browse)
-
-    file_sizer.Add(wx.StaticText(file_panel, label="选择文件保存位置"), 0, wx.ALL, 8)
-    file_sizer.Add(path_text, 0, wx.EXPAND | wx.ALL, 5)
-    btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-    btn_sizer.Add(browse_button, 0, wx.RIGHT, 5)
-    btn_sizer.Add(link_to_2, 0)
-    file_sizer.Add(btn_sizer, 0, wx.ALL, 5)
-
     # ========================== 下载 ==========================
     down_panel, down_sizer = make_scroll_panel(notebook)
 
     def down_content(s):
-        global retry_ctrl, timeout_ctrl, threads_ctrl, chunk_ctrl, cache_ctrl, unit_ctrl, ssl_ctrl
+        global retry_ctrl, timeout_ctrl, stall_ctrl, threads_ctrl, chunk_ctrl, cache_ctrl, unit_ctrl, ssl_ctrl
         grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=8)
         grid.AddGrowableCol(1, 1)
 
@@ -214,6 +179,9 @@ def options(event):
 
         timeout_label = wx.StaticText(down_panel, label="超时时间(秒)")
         timeout_ctrl = wx.SpinCtrl(down_panel, value=str(config.get('dl_timeout', 240)), min=10, max=600, size=(CTRL_W, -1))
+
+        stall_label = wx.StaticText(down_panel, label="读取停滞超时(秒)")
+        stall_ctrl = wx.SpinCtrl(down_panel, value=str(config.get('dl_read_stall', 30)), min=5, max=300, size=(CTRL_W, -1))
 
         threads_label = wx.StaticText(down_panel, label="并发线程数")
         threads_ctrl = wx.SpinCtrl(down_panel, value=str(config.get('dl_threads', 8)), min=1, max=128, size=(CTRL_W, -1))
@@ -233,7 +201,8 @@ def options(event):
             unit_ctrl.SetStringSelection('MB/s')
 
         for lbl, ctrl in [(retry_label, retry_ctrl), (timeout_label, timeout_ctrl),
-                          (threads_label, threads_ctrl), (chunk_label, chunk_ctrl),
+                          (stall_label, stall_ctrl), (threads_label, threads_ctrl),
+                          (chunk_label, chunk_ctrl),
                           (cache_label, cache_ctrl), (unit_label, unit_ctrl)]:
             grid.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL)
             grid.Add(ctrl, 1, wx.EXPAND | wx.ALIGN_CENTER_VERTICAL)
@@ -248,6 +217,40 @@ def options(event):
 
     # ========================== 存储 ==========================
     storage_panel, storage_sizer = make_scroll_panel(notebook)
+
+    path_label = wx.StaticText(storage_panel, label="下载文件保存位置")
+    path_text = wx.TextCtrl(storage_panel, value=dirs)
+
+    def on_browse(event):
+        dialog = wx.DirDialog(storage_panel, "选择下载文件夹",
+                              style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
+        if dialog.ShowModal() == wx.ID_OK:
+            new_path = dialog.GetPath()
+            path_text.SetValue(new_path)
+            global dirs
+            dirs = new_path + "\\"
+            with open(os.path.join(target_folder, "dir.txt"), "w") as f:
+                f.write(dirs)
+        dialog.Destroy()
+
+    browse_button = wx.Button(storage_panel, label="浏览...")
+    link_to_2 = wx.Button(storage_panel, label="打开文件路径",
+                          style=wx.BORDER_NONE, size=(140, 30))
+    link_to_2.SetForegroundColour(wx.Colour(0, 0, 255))
+    link_to_2.SetBackgroundColour(wx.Colour(249, 249, 249))
+    link_to_2.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    link_to_2.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+    link_to_2.Bind(wx.EVT_BUTTON, on_go_to_file)
+    browse_button.Bind(wx.EVT_BUTTON, on_browse)
+
+    storage_sizer.Add(path_label, 0, wx.ALL, 8)
+    storage_sizer.Add(path_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+    btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    btn_sizer.Add(browse_button, 0, wx.RIGHT, 5)
+    btn_sizer.Add(link_to_2, 0)
+    storage_sizer.Add(btn_sizer, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+    storage_sizer.Add(wx.StaticLine(storage_panel, style=wx.LI_HORIZONTAL), 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
     temp_size_label = wx.StaticText(storage_panel, label="临时文件大小:")
     temp_size_text = wx.StaticText(storage_panel, label="")
@@ -623,12 +626,333 @@ def options(event):
     plugin_sizer.Add(plugin_note, 0, wx.ALL, 8)
 
     notebook.AddPage(window, "界面设置")
-    notebook.AddPage(file_panel, "文件")
     notebook.AddPage(down_panel, "下载")
     notebook.AddPage(storage_panel, "存储")
     notebook.AddPage(header_panel, "请求头")
     notebook.AddPage(port_panel, "端口")
     notebook.AddPage(plugin_panel, "浏览器插件")
+
+    # ========================== 配置 ==========================
+    config_panel, config_sizer = make_scroll_panel(notebook)
+
+    sys_type = platform.system()
+
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    _exe = sys.executable.lower()
+    is_frozen = not (_exe.endswith('python.exe') or _exe.endswith('pythonw.exe') or
+                     _exe.endswith('python3') or _exe.endswith('python'))
+
+    if is_frozen:
+        main_script = sys.executable
+    else:
+        main_script = os.path.join(app_dir, "NodaniumLauncher.py")
+
+    def _build_cmd(args):
+        """Build a command line string for launching Nodanium."""
+        if is_frozen:
+            return f'"{sys.executable}" {args}'
+        else:
+            if sys_type == "Windows":
+                python_dir = os.path.dirname(sys.executable)
+                pythonw = os.path.join(python_dir, "pythonw.exe")
+                launcher = os.path.abspath(main_script)
+                if os.path.exists(pythonw):
+                    return f'"{pythonw}" "{launcher}" {args}'
+                return f'"{sys.executable}" "{launcher}" {args}'
+            else:
+                launcher = os.path.abspath(main_script)
+                return f'{sys.executable} "{launcher}" {args}'
+
+    # --- 开机自启 ---
+    autostart_box = wx.StaticBox(config_panel, label="开机自启动")
+    autostart_sizer = wx.StaticBoxSizer(autostart_box, wx.VERTICAL)
+
+    run_mode = "可执行程序" if is_frozen else "Python 脚本"
+    autostart_desc = wx.StaticText(
+        config_panel,
+        label=f"当前系统: {sys_type}  |  运行模式: {run_mode}  |  将以静默模式 (-s) 后台启动")
+    autostart_desc.SetForegroundColour(wx.Colour(90, 90, 90))
+    autostart_sizer.Add(autostart_desc, 0, wx.ALL, 8)
+
+    autostart_check = wx.CheckBox(config_panel, label="开机自动启动 Nodanium")
+
+    def get_autostart_status():
+        if sys_type == "Windows":
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0, winreg.KEY_READ)
+                try:
+                    winreg.QueryValueEx(key, "Nodanium")
+                    winreg.CloseKey(key)
+                    return True
+                except FileNotFoundError:
+                    winreg.CloseKey(key)
+                    return False
+            except Exception:
+                return False
+        elif sys_type == "Linux":
+            desktop_path = os.path.expanduser("~/.config/autostart/nodanium.desktop")
+            return os.path.exists(desktop_path)
+        return False
+
+    autostart_check.SetValue(get_autostart_status())
+
+    autostart_sizer.Add(autostart_check, 0, wx.ALL, 8)
+
+    autostart_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+    def on_autostart_toggle(event):
+        enable = autostart_check.GetValue()
+        try:
+            if sys_type == "Windows":
+                import winreg
+                key = winreg.CreateKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run")
+                if enable:
+                    cmd = _build_cmd("-s")
+                    winreg.SetValueEx(key, "Nodanium", 0, winreg.REG_SZ, cmd)
+                    wx.MessageBox("已添加到开机自启动", "成功", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    try:
+                        winreg.DeleteValue(key, "Nodanium")
+                    except Exception:
+                        pass
+                    wx.MessageBox("已取消开机自启动", "成功", wx.OK | wx.ICON_INFORMATION)
+                winreg.CloseKey(key)
+            elif sys_type == "Linux":
+                autostart_dir = os.path.expanduser("~/.config/autostart")
+                os.makedirs(autostart_dir, exist_ok=True)
+                desktop_path = os.path.join(autostart_dir, "nodanium.desktop")
+                if enable:
+                    if is_frozen:
+                        exec_line = f"{sys.executable} -s"
+                    else:
+                        exec_line = f"{sys.executable} {os.path.abspath(main_script)} -s"
+                    content = (
+                        "[Desktop Entry]\n"
+                        "Type=Application\n"
+                        "Name=Nodanium\n"
+                        f"Exec={exec_line}\n"
+                        "X-GNOME-Autostart-enabled=true\n"
+                        "Terminal=false\n"
+                    )
+                    with open(desktop_path, 'w') as f:
+                        f.write(content)
+                    wx.MessageBox("已添加到开机自启动", "成功", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    if os.path.exists(desktop_path):
+                        os.remove(desktop_path)
+                    wx.MessageBox("已取消开机自启动", "成功", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"操作失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+    apply_autostart_btn = wx.Button(config_panel, label="应用开机自启设置")
+    apply_autostart_btn.Bind(wx.EVT_BUTTON, on_autostart_toggle)
+    autostart_btn_sizer.Add(apply_autostart_btn, 0, wx.RIGHT, 5)
+
+    def on_open_autostart_folder(event):
+        try:
+            if sys_type == "Windows":
+                import subprocess
+                subprocess.Popen(["explorer", "shell:startup"])
+            elif sys_type == "Linux":
+                import subprocess
+                subprocess.Popen(["xdg-open", os.path.expanduser("~/.config/autostart")])
+        except Exception as e:
+            wx.MessageBox(str(e), "错误", wx.OK | wx.ICON_ERROR)
+
+    open_folder_btn = wx.Button(config_panel, label="打开自启动目录")
+    open_folder_btn.Bind(wx.EVT_BUTTON, on_open_autostart_folder)
+    autostart_btn_sizer.Add(open_folder_btn, 0)
+
+    autostart_sizer.Add(autostart_btn_sizer, 0, wx.ALL, 8)
+    config_sizer.Add(autostart_sizer, 0, wx.EXPAND | wx.ALL, 8)
+
+    # --- 文件关联 ---
+    filetype_box = wx.StaticBox(config_panel, label="NDF 文件关联")
+    filetype_sizer = wx.StaticBoxSizer(filetype_box, wx.VERTICAL)
+
+    filetype_desc = wx.StaticText(
+        config_panel,
+        label="注册 .ndf 文件扩展名到 Nodanium\n"
+              "双击 .ndf 文件可直接用 Nodanium 打开恢复下载")
+    filetype_desc.SetForegroundColour(wx.Colour(90, 90, 90))
+    filetype_sizer.Add(filetype_desc, 0, wx.ALL, 8)
+
+    filetype_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+    def on_register_ndf(event):
+        try:
+            if sys_type == "Windows":
+                import winreg
+                exts_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.ndf")
+                winreg.SetValueEx(exts_key, "", 0, winreg.REG_SZ, "Nodanium.ndf")
+                winreg.CloseKey(exts_key)
+
+                type_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Nodanium.ndf")
+                winreg.SetValueEx(type_key, "", 0, winreg.REG_SZ, "Nodanium 下载进度文件")
+                winreg.SetValueEx(type_key, "Content Type", 0, winreg.REG_SZ, "application/x-nodanium")
+
+                icon_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Nodanium.ndf\DefaultIcon")
+                icon_path = os.path.join(app_dir, "icons", "ANT_icon.png")
+                winreg.SetValueEx(icon_key, "", 0, winreg.REG_SZ, icon_path)
+                winreg.CloseKey(icon_key)
+                winreg.CloseKey(type_key)
+
+                command_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Nodanium.ndf\shell\open\command")
+                cmd = _build_cmd('--resume="%1"')
+                winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, cmd)
+                winreg.CloseKey(command_key)
+
+                try:
+                    import subprocess
+                    subprocess.run(["assoc", ".ndf=Nodanium.ndf"], shell=True)
+                    subprocess.run(["ftype", "Nodanium.ndf=Nodanium 下载进度文件"], shell=True)
+                except Exception:
+                    pass
+
+                wx.MessageBox(".ndf 文件关联已注册", "成功", wx.OK | wx.ICON_INFORMATION)
+            elif sys_type == "Linux":
+                mime_path = os.path.expanduser("~/.local/share/mime/packages/nodanium.xml")
+                os.makedirs(os.path.dirname(mime_path), exist_ok=True)
+                mime_xml = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">\n'
+                    '  <mime-type type="application/x-nodanium">\n'
+                    '    <comment>Nodanium 下载进度文件</comment>\n'
+                    '    <glob pattern="*.ndf"/>\n'
+                    '  </mime-type>\n'
+                    '</mime-info>\n'
+                )
+                with open(mime_path, 'w') as f:
+                    f.write(mime_xml)
+
+                desktop_path = os.path.expanduser("~/.local/share/applications/nodanium.desktop")
+                if is_frozen:
+                    exec_line = f"{sys.executable} --resume=%f"
+                else:
+                    exec_line = f"{sys.executable} {os.path.abspath(main_script)} --resume=%f"
+                desktop_content = (
+                    "[Desktop Entry]\n"
+                    "Type=Application\n"
+                    "Name=Nodanium\n"
+                    "MimeType=application/x-nodanium;\n"
+                    f"Exec={exec_line}\n"
+                    "Terminal=false\n"
+                )
+                with open(desktop_path, 'w') as f:
+                    f.write(desktop_content)
+
+                try:
+                    import subprocess
+                    subprocess.run(["update-mime-database", os.path.expanduser("~/.local/share/mime")],
+                                   capture_output=True, timeout=30)
+                    subprocess.run(["update-desktop-database", os.path.expanduser("~/.local/share/applications")],
+                                   capture_output=True, timeout=30)
+                except Exception:
+                    pass
+
+                wx.MessageBox(".ndf 文件关联已注册", "成功", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"注册失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+    register_ndf_btn = wx.Button(config_panel, label="注册 .ndf 文件关联")
+    register_ndf_btn.Bind(wx.EVT_BUTTON, on_register_ndf)
+    filetype_btn_sizer.Add(register_ndf_btn, 0, wx.RIGHT, 5)
+
+    def _delete_reg_tree(root, path):
+        """递归删除注册表键及其所有子键。"""
+        import winreg
+        try:
+            key = winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS)
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, 0)
+                    _delete_reg_tree(root, path + "\\" + subkey_name)
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+            winreg.DeleteKey(root, path)
+        except FileNotFoundError:
+            pass
+
+    def on_unregister_ndf(event):
+        try:
+            if sys_type == "Windows":
+                import winreg
+                _delete_reg_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\Nodanium.ndf")
+
+                ndf_key_path = r"Software\Classes\.ndf"
+                try:
+                    ndf_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, ndf_key_path, 0, winreg.KEY_READ)
+                    try:
+                        val, _ = winreg.QueryValueEx(ndf_key, "")
+                        if val == "Nodanium.ndf":
+                            has_other = False
+                            i = 0
+                            while True:
+                                try:
+                                    subkey = winreg.EnumKey(ndf_key, i)
+                                    if subkey != "Nodanium.ndf" and subkey != "OpenWithProgids":
+                                        has_other = True
+                                        break
+                                    i += 1
+                                except OSError:
+                                    break
+                            if not has_other:
+                                _delete_reg_tree(winreg.HKEY_CURRENT_USER, ndf_key_path)
+                            else:
+                                try:
+                                    winreg.DeleteValue(ndf_key, "")
+                                except Exception:
+                                    pass
+                            winreg.CloseKey(ndf_key)
+                        else:
+                            winreg.CloseKey(ndf_key)
+                    except FileNotFoundError:
+                        winreg.CloseKey(ndf_key)
+                except FileNotFoundError:
+                    pass
+
+                try:
+                    import subprocess
+                    subprocess.run(["assoc", ".ndf="], shell=True, capture_output=True)
+                    subprocess.run(["ftype", "Nodanium.ndf="], shell=True, capture_output=True)
+                except Exception:
+                    pass
+
+                wx.MessageBox(".ndf 文件关联已解除", "成功", wx.OK | wx.ICON_INFORMATION)
+            elif sys_type == "Linux":
+                for p in [
+                    os.path.expanduser("~/.local/share/mime/packages/nodanium.xml"),
+                    os.path.expanduser("~/.local/share/applications/nodanium.desktop"),
+                ]:
+                    if os.path.exists(p):
+                        os.remove(p)
+                try:
+                    import subprocess
+                    subprocess.run(["update-mime-database", os.path.expanduser("~/.local/share/mime")],
+                                   capture_output=True, timeout=30)
+                    subprocess.run(["update-desktop-database", os.path.expanduser("~/.local/share/applications")],
+                                   capture_output=True, timeout=30)
+                except Exception:
+                    pass
+                wx.MessageBox(".ndf 文件关联已解除", "成功", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"操作失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+    unregister_ndf_btn = wx.Button(config_panel, label="解除 .ndf 文件关联")
+    unregister_ndf_btn.Bind(wx.EVT_BUTTON, on_unregister_ndf)
+    filetype_btn_sizer.Add(unregister_ndf_btn, 0)
+
+    filetype_sizer.Add(filetype_btn_sizer, 0, wx.ALL, 8)
+    config_sizer.Add(filetype_sizer, 0, wx.EXPAND | wx.ALL, 8)
+
+    notebook.AddPage(config_panel, "配置")
 
     def on_save_config(event):
         global Pos
@@ -651,6 +975,7 @@ def options(event):
 
         config['dl_max_retry'] = retry_ctrl.GetValue()
         config['dl_timeout'] = timeout_ctrl.GetValue()
+        config['dl_read_stall'] = stall_ctrl.GetValue()
         config['dl_threads'] = threads_ctrl.GetValue()
         config['dl_chunk_mb'] = chunk_ctrl.GetValue()
         config['dl_cache_mb'] = cache_ctrl.GetValue()
@@ -664,6 +989,7 @@ def options(event):
             import NewDownloadCore
             NewDownloadCore.DEFAULT_RETRY = retry_ctrl.GetValue()
             NewDownloadCore.DEFAULT_TIMEOUT = timeout_ctrl.GetValue()
+            NewDownloadCore.READ_STALL_TIMEOUT = stall_ctrl.GetValue()
         except Exception:
             pass
 
@@ -687,8 +1013,4 @@ def options(event):
 
     for sp in scroll_panels:
         sp.Layout()
-        sp.SetVirtualSize(sp.GetBestVirtualSize())
-        sp.FitInside()
-
-    options_window.Raise()
-    options_window.SetFocus()
+        sp.SetVirtualSize(sp.GetBestVi)

@@ -61,6 +61,9 @@ Nodanium(钒合金)是一个用Python开发的，跨Windows/Linux的网络工具
 在Windows上可下载``.zip`` ``.exe``格式的程序或安装包。
 在Linux上可下载``.deb``格式的包或``.tar.gz``格式的压缩包。
 
+[注意]
+Linux 包基于 Python 3.12 及较新工具链构建，**最低要求 glibc ≥ 2.38**。
+
 ## 四、CLI命令和程序目录 ##
 ### CLI选项:
 ```

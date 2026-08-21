@@ -174,7 +174,7 @@ def MainPanel(parent):
     return parent
 
 if __name__ == "__main__":
-    # 用于测试的代码
+
     app = wx.App()
     frame = wx.Frame(None, title="文件共享", size=(500, 400))
     panel = wx.Panel(frame)

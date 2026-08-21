@@ -11,7 +11,7 @@ import platform
 import uuid
 import subprocess
 from urllib.parse import urlparse
-from FileIcon import get_file_icon, get_fallback_icon
+from FileIcon import get_file_icon, get_fallback_icon, THUMBNAIL_EXTENSIONS
 
 def get_filename_from_url(url):
     parsed = urlparse(url)
@@ -189,19 +189,24 @@ def refresh_download_list(list_ctrl, image_list):
     list_ctrl.DeleteAllItems()
     image_list.RemoveAll()
     
-    icon_cache = {}  
+    icon_cache = {}
     
     for record in download_history:
        
         file_path = os.path.join(record["save_path"], record["filename"])
         
         ext = os.path.splitext(record["filename"])[1].lower()
-        if ext not in icon_cache:
+        # 图片文件按完整路径缓存以显示各自缩略图，其余类型按扩展名共享图标
+        if os.path.isfile(file_path) and ext in THUMBNAIL_EXTENSIONS:
+            cache_key = file_path
+        else:
+            cache_key = ext
+        if cache_key not in icon_cache:
             icon = get_file_icon(file_path)
             icon_index = image_list.Add(icon)
-            icon_cache[ext] = icon_index
+            icon_cache[cache_key] = icon_index
         else:
-            icon_index = icon_cache[ext]
+            icon_index = icon_cache[cache_key]
         
   
         index = list_ctrl.InsertItem(list_ctrl.GetItemCount(), icon_index)
@@ -516,7 +521,7 @@ def refresh_download_list(list_ctrl, image_list):
     list_ctrl.DeleteAllItems()
     image_list.RemoveAll()
     
-    icon_cache = {} 
+    icon_cache = {}
     
     for record in download_history:
   
@@ -524,12 +529,17 @@ def refresh_download_list(list_ctrl, image_list):
         
  
         ext = os.path.splitext(record["filename"])[1].lower()
-        if ext not in icon_cache:
+        # 图片文件按完整路径缓存以显示各自缩略图，其余类型按扩展名共享图标
+        if os.path.isfile(file_path) and ext in THUMBNAIL_EXTENSIONS:
+            cache_key = file_path
+        else:
+            cache_key = ext
+        if cache_key not in icon_cache:
             icon = get_file_icon(file_path)
             icon_index = image_list.Add(icon)
-            icon_cache[ext] = icon_index
+            icon_cache[cache_key] = icon_index
         else:
-            icon_index = icon_cache[ext]
+            icon_index = icon_cache[cache_key]
         
         index = list_ctrl.InsertItem(list_ctrl.GetItemCount(), icon_index)
         

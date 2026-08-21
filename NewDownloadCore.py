@@ -26,7 +26,11 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 DEFAULT_TIMEOUT = 240
-DEFAULT_RETRY = 100 #重试次数
+# 流式读取时的单次读超时（秒）。默认值实时连接上的数据必须在此时长内到达，否则判定连接停滞，
+# 立即按异常重试而非干等，避免“速度掉到 0.几B/s、剩余时间越拉越长、永远下不完”的假死。
+READ_STALL_TIMEOUT = 30
+default_retry = 100  #重试次数
+DEFAULT_RETRY = default_retry
 GRID_CELL_SIZE = 12
 NDF_SUFFIX = ".ndf"
 PROGRESS_JSON_NAME = "download_progress.json"
@@ -59,12 +63,14 @@ class DownloadCtx:
     completion_callback: Optional[Any]
     uuid: str = "" 
     speed_unit: str = "MB/s"
+    original_url: str = ""   # 最初的未处理下载链接（重定向前的地址）
     file_total_size: int = 0
     total_downloaded: int = 0
     chunk_task_list: Optional[List[ChunkTask]] = None
     task_queue: Optional[Queue] = None
     stop_event: Optional[threading.Event] = None
     global_lock: Optional[threading.Lock] = None
+    file_write_lock: Optional[threading.Lock] = None   # 跨分片文件写锁，保证 seek+write 原子
     file_obj: Optional[Any] = None   # 标准文件对象
     last_speed_calc_ts: float = 0.0
     last_total_bytes: int = 0
@@ -134,21 +140,29 @@ def pre_allocate_file(file_path: str, total_size: int, resume: bool = False):
         os.fsync(f.fileno())
     return f
 
-def chunk_seek_write(file_obj, offset: int, data: bytes) -> bool:
-    """文件指定偏移写入，强制刷盘防止缓存丢失"""
+def chunk_seek_write(file_obj, offset: int, data: bytes, do_fsync: bool = False) -> bool:
+    """文件指定偏移写入。
+    调用方需持有 ctx.file_write_lock 以保证同一文件对象上 seek+write 的原子性（避免并发写坏偏移）。
+    do_fsync 为 True 时强制刷盘（用于暂停/完成等关键节点），批量缓冲刷新仅 flush 不落盘，
+    避免 os.fsync 在慢盘上成为吞吐瓶颈导致速度骤降。
+    """
     if not file_obj or len(data) == 0:
         return False
     try:
         file_obj.seek(offset, os.SEEK_SET)
         write_len = file_obj.write(data)
         file_obj.flush()
-        os.fsync(file_obj.fileno())
+        if do_fsync:
+            os.fsync(file_obj.fileno())
         return write_len == len(data)
     except Exception:
         return False
 
-def flush_single_chunk_buffer(ctx: DownloadCtx, task: ChunkTask) -> int:
-    """刷新单个分片私有缓冲，分片锁隔离并发写入"""
+def flush_single_chunk_buffer(ctx: DownloadCtx, task: ChunkTask, do_fsync: bool = False) -> int:
+    """刷新单个分片私有缓冲。
+    同一文件对象由多线程 seek+write，因此整个 读缓冲+seek+write+flush 必须在全局写锁内执行，
+    否则多个分片 seek/write 交错会把数据写到错误偏移，导致该分片永远下不完（表现为 0.xB/s/假死）。
+    """
     if task.task_buffer is None or task.task_buffer.getbuffer().nbytes == 0:
         return 0
     with task.chunk_lock:
@@ -156,8 +170,14 @@ def flush_single_chunk_buffer(ctx: DownloadCtx, task: ChunkTask) -> int:
         write_offset = task.start_byte + (task.downloaded - len(data))
         retry = 3
         write_ok = False
+        # 全部分片共享同一文件对象，写出必须加全局写锁
+        write_lock = getattr(ctx, "file_write_lock", None)
         while retry > 0 and not write_ok:
-            write_ok = chunk_seek_write(ctx.file_obj, write_offset, data)
+            if write_lock is not None:
+                with write_lock:
+                    write_ok = chunk_seek_write(ctx.file_obj, write_offset, data, do_fsync=do_fsync)
+            else:
+                write_ok = chunk_seek_write(ctx.file_obj, write_offset, data, do_fsync=do_fsync)
             if not write_ok:
                 retry -= 1
                 time.sleep(0.05)
@@ -184,7 +204,7 @@ def safe_delete_file(filepath: str, max_retry: int = 5) -> bool:
 # -------------------------- 断点续传JSON & NDF导入导出 --------------------------
 def dump_progress_json(ctx: DownloadCtx) -> None:
     progress_data = {
-        "url": ctx.url,
+        "url": ctx.original_url if ctx.original_url else ctx.url,
         "save_path": ctx.save_path,
         "filename": ctx.filename,
         "jobs": ctx.jobs,
@@ -307,15 +327,22 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
             try:
                 range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
                 req_headers = {**ctx.headers, **range_header}
-                with session.get(ctx.url, headers=req_headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=(not ctx.disable_ssl)) as resp:
+                # 用 (连接超时, 单次读超时) 元组：读超时取较小值，连接长时间不吐数据
+                # 就快速判定停滞并重试，而不是干等 DEFAULT_TIMEOUT 秒导致速度掉到 0 假死。
+                read_to = max(5, min(int(DEFAULT_TIMEOUT), int(getattr(ctx, 'read_stall_timeout', READ_STALL_TIMEOUT))))
+                with session.get(ctx.url, headers=req_headers, stream=True,
+                                 timeout=(DEFAULT_TIMEOUT, read_to), verify=(not ctx.disable_ssl)) as resp:
                     resp.raise_for_status()
-                    
+                    last_data_ts = time.time()
+                    got_data = False
                     for raw_data in resp.iter_content(chunk_size=8192):
                         if ctx.stop_event.is_set():
-                            flush_single_chunk_buffer(ctx, task)
+                            flush_single_chunk_buffer(ctx, task, do_fsync=True)
                             break
                         if not raw_data:
                             continue
+                        got_data = True
+                        last_data_ts = time.time()
                         task.task_buffer.write(raw_data)
                         data_len = len(raw_data)
                         task.downloaded += data_len
@@ -332,6 +359,13 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                         if task.downloaded >= total_chunk_len:
                             chunk_finish_flag = True
                             break
+                        # 停滞看门狗：距上次收到数据超过阈值仍未新数据，主动抛异常走重试，
+                        # 避免整条连接僵死、速度长期为 0、剩余时间越算越长。
+                        if not ctx.stop_event.is_set() and (time.time() - last_data_ts) > read_to:
+                            raise requests.exceptions.ReadTimeout("读取停滞超时，主动重试")
+                    if not got_data:
+                        raise requests.exceptions.ReadTimeout("服务器未返回任何数据，主动重试")
+            
             
             except Exception as e:
                 retry_times += 1
@@ -350,7 +384,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                     time.sleep(1)
         
         
-        flush_single_chunk_buffer(ctx, task)
+        flush_single_chunk_buffer(ctx, task, do_fsync=True)
         
         if task.downloaded >= total_chunk_len:
             with ctx.global_lock:
@@ -379,7 +413,11 @@ def ui_push_chunk_progress(ctx: DownloadCtx, chunk_idx: int, downloaded: int, ch
     pct = min(int((downloaded / chunk_total) * 100), 100)
     wx.CallAfter(ctx.ui_frame.update_grid_cell, chunk_idx, pct)
 def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
-    """刷新速度面板 - 使用滑动窗口平均算法"""
+    """刷新速度面板。
+    速度 = 采样窗口内的真实字节数 / 真实耗时。不做任何“每次最多减半”之类的钳制——
+    那种钳制会在下载停顿/缓冲时让平均速度每 0.3s 迭代指数衰减，最终显示 0.x B/s 这种
+    物理上不可能的数值，并导致剩余时间被越算越长。窗口内真实速度为 0 就显示 0。
+    """
     if ctx.stop_event.is_set() or ctx.ui_frame is None or ctx.file_total_size == 0:
         return
     
@@ -395,36 +433,19 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
         ctx.last_total_bytes = ctx.total_downloaded
         ctx.last_speed_calc_ts = now_ts
     
-  
-    if not hasattr(ctx, 'speed_history'):
-        ctx.speed_history = []
-    
+    # 真实瞬时速度（可能为 0，但绝不可能是无意义的 0.x 小数）
     current_speed = delta_bytes / delta_ts if delta_ts > 0 else 0
-    ctx.speed_history.append(current_speed)
     
-
-    if len(ctx.speed_history) > 8:
-        ctx.speed_history.pop(0)
-    
-
-    valid_speeds = [s for s in ctx.speed_history if s > 0]
-    if valid_speeds:
-        valid_speeds.sort()
-        if len(valid_speeds) % 2 == 0:
-            avg_speed = (valid_speeds[len(valid_speeds)//2 - 1] + valid_speeds[len(valid_speeds)//2]) / 2
-        else:
-            avg_speed = valid_speeds[len(valid_speeds)//2]
+    # 指数加权平滑：只平滑“抖动的真实速度”，不把停顿期的 0 人为放大或缩小成虚假小数。
+    if not hasattr(ctx, 'last_avg_speed') or ctx.last_avg_speed is None:
+        ctx.last_avg_speed = current_speed
     else:
-        avg_speed = current_speed
+        ctx.last_avg_speed = 0.7 * current_speed + 0.3 * ctx.last_avg_speed
     
-
-    if hasattr(ctx, 'last_avg_speed') and ctx.last_avg_speed > 0:
-        max_increase = ctx.last_avg_speed * 1.5
-        max_decrease = ctx.last_avg_speed * 0.5
-        avg_speed = max(min(avg_speed, max_increase), max_decrease)
-    
-    ctx.last_avg_speed = avg_speed
-    
+    # 避免在停顿重启瞬间出现无意义的极小伪速度（真实速度至少为一个网络包起步）
+    avg_speed = ctx.last_avg_speed
+    if avg_speed > 0 and avg_speed < 1.0:
+        avg_speed = 0.0
 
     speed_str = format_speed(avg_speed, ctx.speed_unit)
     
@@ -434,13 +455,13 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
     
-    # 计算剩余时间
+    # 剩余时间：用真实速度计算，避免"越来越长"；停滞时显示计算中
     if avg_speed > 0:
         remain_bytes = ctx.file_total_size - ctx.total_downloaded
         remain_sec_raw = remain_bytes / avg_speed
         remain_sec_raw = max(0, remain_sec_raw)
         
-        if not hasattr(ctx, 'last_remain_sec'):
+        if not hasattr(ctx, 'last_remain_sec') or ctx.last_remain_sec is None:
             ctx.last_remain_sec = remain_sec_raw
         else:
 
@@ -663,8 +684,13 @@ def init_download_context(
         uuid=uuid, 
         speed_unit=speed_unit,
         stop_event=threading.Event(),
-        global_lock=threading.Lock()
+        global_lock=threading.Lock(),
+        file_write_lock=threading.Lock()
     )
+    # 快照最初未处理的原始链接，重定向解析后用于写回进度文件
+    ctx.original_url = url or ""
+    # 让下载上下文在启动时快照当前读取停滞超时，供分片线程使用（也便于 UI 动态调参后生效）
+    ctx.read_stall_timeout = READ_STALL_TIMEOUT
     ctx.ndf_progress_path = os.path.join(save_path, f"{filename}_{PROGRESS_JSON_NAME}")
     ctx._resume_json_path = resume_json_path
     ctx.last_speed_calc_ts = 0.0
@@ -677,12 +703,25 @@ def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
     resume_data = {}
     if ctx._resume_json_path and os.path.exists(ctx._resume_json_path):
         resume_data = load_progress_json(ctx._resume_json_path)
+    ctx.original_url = ctx.url or ""
     try:
-        head_resp = requests.head(ctx.url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl)
-        ctx.file_total_size = int(head_resp.headers.get("content-length", 0))
+        # 先跟随重定向获取最终真实下载地址，供后续 HEAD 与分片请求使用，
+        # 避免每个分片各自重复重定向、以及重定向后头信息不一致导致的失败。
+        session = requests.Session()
+        session.max_redirects = 16
+        final_size = 0
+        with session.get(ctx.url, headers=ctx.headers, stream=True,
+                         timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl) as r:
+            final_url = (r.url or "").strip()
+            if final_url and final_url != ctx.url:
+                ui_push_log(ctx, f"已重定向到: {final_url}")
+                ctx.url = final_url
+            final_size = int(r.headers.get("content-length", 0) or 0)
+        session.close()
+        ctx.file_total_size = final_size
         if ctx.file_total_size <= 0:
-            with requests.get(ctx.url, headers=ctx.headers, stream=True, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl) as r:
-                ctx.file_total_size = int(r.headers.get("content-length", 0))
+            head_resp = requests.head(ctx.url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl)
+            ctx.file_total_size = int(head_resp.headers.get("content-length", 0) or 0)
     except Exception:
         ctx.file_total_size = resume_data.get("file_total_size", 0)
     if resume_data and "chunks" in resume_data:
@@ -1626,4 +1665,4 @@ if __name__ == "__main__":
             SpeedUnit="MiB"
         )
     else:
-        ResumeDownload("/home/yujy/下载/code.deb.ndf", Jobs=16, Cache=20.0)
+        ResumeDownload("", Jobs=16, Cache=20.0)

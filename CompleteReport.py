@@ -348,10 +348,10 @@ if __name__ == "__main__":
     app = wx.App(False)
     show_download_complete_report(
         parent=None,
-        filename="1.rar",
-        save_path="/home/yujy/下载",
+        filename="",
+        save_path="",
         file_size=0,
         time_cost="1",
-        average_speed=800000
+        average_speed=0
     )
     app.MainLoop()
