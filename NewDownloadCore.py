@@ -100,6 +100,10 @@ class DownloadCtx:
     _completion_handled: bool = False
     _resume_json_path: str = ""
     pause_requested: bool = False
+    # -------------------------- 限速（全局限流，0 表示不限速） --------------------------
+    speed_limit_bps: float = 0.0       # 全局最大下载速度（字节/秒），0=不限速
+    rate_lock: Optional[threading.Lock] = None
+    rate_last_refill: float = 0.0
 
 # --------------------------  --------------------------
 
@@ -314,6 +318,32 @@ def split_file_chunks(total_size: int, jobs: int, single_chunk_bytes: int) -> Li
     return chunk_list
 
 # -------------------------- 网络分片--------------------------
+def rate_limit_wait(ctx: DownloadCtx, bytes_consumed: int) -> None:
+    """全局限速（基于虚拟完成时刻的流控）。
+    rate_last_refill 记录上一次已预留的数据块“虚拟完成时间”。每个数据块
+    在锁内排队：finish = max(now, 上一次完成时间) + bytes/limit，并把完成时间
+    前移；sleep 在锁外执行。这样即使多线程并发，各分片也共享同一张时间表，
+    整体下载速度严格不超过 speed_limit_bps。限速为 0 时直接返回不加限制。
+    """
+    limit = ctx.speed_limit_bps
+    if limit <= 0:
+        return
+    lock = ctx.rate_lock
+    if lock is None:
+        return
+    with lock:
+        now = time.time()
+        if ctx.rate_last_refill == 0:
+            ctx.rate_last_refill = now
+            wait_sec = 0.0
+        else:
+            finish = max(now, ctx.rate_last_refill) + bytes_consumed / limit
+            wait_sec = finish - now
+            ctx.rate_last_refill = finish
+    if wait_sec > 0:
+        time.sleep(wait_sec)
+
+
 def single_chunk_worker(ctx: DownloadCtx) -> None:
     max_cache_bytes = int(ctx.cache_mb * 1024 * 1024)
     session = requests.Session()
@@ -366,6 +396,8 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                         last_data_ts = time.time()
                         task.task_buffer.write(raw_data)
                         data_len = len(raw_data)
+                        # 全局限速：限制整体下载速度（0 时不生效）
+                        rate_limit_wait(ctx, data_len)
                         task.downloaded += data_len
                         
                         with ctx.global_lock:
@@ -747,6 +779,10 @@ def init_download_context(
     ctx.file_obj = None
     ctx.info_error = ""
     ctx.pause_requested = False
+    # 初始化全局限速时间基准（默认不限速）
+    ctx.speed_limit_bps = 0.0
+    ctx.rate_lock = threading.Lock()
+    ctx.rate_last_refill = 0.0
     return ctx
 
 def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
@@ -884,8 +920,8 @@ class DownloadFrame(wx.Frame):
         if self.grid_cell_pct:
             total_cols = max(1, 400 // self.cell_w)
             total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-            init_grid_w = total_cols * self.cell_w
-            init_grid_h = total_rows * self.cell_h
+            init_grid_w = max(total_cols * self.cell_w, 1)
+            init_grid_h = max(total_rows * self.cell_h, 1)
             self.grid_scroll.SetVirtualSize((init_grid_w, init_grid_h))
             self.grid_panel.SetMinSize((init_grid_w, init_grid_h))
             self.grid_scroll.Layout()
@@ -907,53 +943,155 @@ class DownloadFrame(wx.Frame):
             wx.OK | wx.ICON_ERROR,
         )
     
+    @staticmethod
+    def _fmt_size(num: float) -> str:
+        """将字节数格式化为可读字符串"""
+        if num < 0:
+            return "--"
+        if num < 1024:
+            return f"{num:.0f} B"
+        elif num < 1024 * 1024:
+            return f"{num / 1024:.1f} KB"
+        elif num < 1024 * 1024 * 1024:
+            return f"{num / (1024 * 1024):.2f} MB"
+        else:
+            return f"{num / (1024 * 1024 * 1024):.2f} GB"
+
     def create_ui_layout(self):
         main_vbox = wx.BoxSizer(wx.VERTICAL)
         
-      
+        # -------------------------- 顶部：总进度条 + 状态 --------------------------
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         self.global_gauge = wx.Gauge(self.panel, range=100, size=(-1, 22))
         top_box.Add(self.global_gauge, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=10)
         self.status_label = wx.StaticText(self.panel, label="正在获取文件信息...")
         top_box.Add(self.status_label, proportion=0)
-        main_vbox.Add(top_box, flag=wx.EXPAND | wx.ALL, border=8)
+        main_vbox.Add(top_box, flag=wx.EXPAND | wx.ALL, border=6)
 
+
+
+        # -------------------------- 实时速度栏 --------------------------
         speed_box = wx.BoxSizer(wx.HORIZONTAL)
-
-        
         self.speed_text = wx.StaticText(self.panel, label="总速度: 0 B/s")
-        self.speed_text.SetMinSize((150, -1))
+        self.speed_text.SetMinSize((130, -1))
         self.elapsed_text = wx.StaticText(self.panel, label="已耗时: 00:00:00")
         self.remain_text = wx.StaticText(self.panel, label="预计剩余: --")
-        speed_box.Add(self.speed_text, flag=wx.RIGHT, border=20)
+        speed_box.Add(self.speed_text, flag=wx.RIGHT, border=15)
         speed_box.Add(self.elapsed_text, flag=wx.RIGHT, border=15)
         speed_box.Add(self.remain_text)
-        main_vbox.Add(speed_box, flag=wx.LEFT | wx.BOTTOM, border=10)
+        main_vbox.Add(speed_box, flag=wx.LEFT | wx.TOP | wx.BOTTOM, border=4)
+
+        # -------------------------- 信息面板 --------------------------
         
-   
-        self.grid_scroll = wx.ScrolledWindow(self.panel, style=wx.VSCROLL | wx.HSCROLL)
+        self.info_pane = wx.CollapsiblePane(self.panel, label="详细信息", style=wx.CP_DEFAULT_STYLE)
+        info_panel = self.info_pane.GetPane()
+        info_sizer = wx.BoxSizer(wx.VERTICAL)
+        info_grid = wx.GridSizer(cols=2, vgap=2, hgap=12)
+        self._info_labels = {}
+    
+        info_defs = [
+            ("percent", "下载进度", "0%"),
+            ("threads", "并发线程数", "--"),
+            ("size", "已下载大小", "0 B"),
+            ("total", "文件总大小", "--"),
+            ("chunk", "分片(已完成/总数)", "--"),
+            ("remaining", "剩余大小", "--"),
+        ]
+        for key, label, init in info_defs:
+            name_txt = wx.StaticText(info_panel, label=f"{label}:")
+            name_txt.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            val_txt = wx.StaticText(info_panel, label=init)
+            val_txt.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            info_grid.Add(name_txt, 0, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL)
+            info_grid.Add(val_txt, 0, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL)
+            self._info_labels[key] = val_txt
+        info_sizer.Add(info_grid, 0, wx.EXPAND | wx.ALL, 4)
+        
+        for key, label, init in (("save_path", "保存目录", "--"), ("filename", "文件名", "--")):
+            row = wx.BoxSizer(wx.HORIZONTAL)
+            name_txt = wx.StaticText(info_panel, label=f"{label}:")
+            name_txt.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            val_txt = wx.StaticText(info_panel, label=init)
+            val_txt.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            row.Add(name_txt, 0, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+            row.Add(val_txt, 1, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL)
+            info_sizer.Add(row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
+            self._info_labels[key] = val_txt
+        info_panel.SetSizer(info_sizer)
+        main_vbox.Add(self.info_pane, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        self.info_pane.Collapse()
+
+        # -------------------------- 限速面板（折叠） --------------------------
+        self.limit_pane = wx.CollapsiblePane(self.panel, label="限速设置", style=wx.CP_DEFAULT_STYLE)
+        limit_panel = self.limit_pane.GetPane()
+        limit_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        limit_hint = wx.StaticText(limit_panel, label="最大下载速度:")
+        self.limit_spin = wx.SpinCtrlDouble(limit_panel, min=0.0, max=100000.0, initial=0.0, inc=0.5)
+        self.limit_spin.SetDigits(1)
+        self.limit_spin.SetSize((120, -1))
+        self.limit_spin.SetValue(0.0)
+        limit_hint2 = wx.StaticText(limit_panel, label="MB/s (0 表示不限速)")
+        self.limit_apply_btn = wx.Button(limit_panel, label="应用")
+        self.limit_clear_btn = wx.Button(limit_panel, label="清除限速")
+        limit_sizer.Add(limit_hint, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        limit_sizer.Add(self.limit_spin, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        limit_sizer.Add(limit_hint2, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        limit_sizer.Add(self.limit_apply_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        limit_sizer.Add(self.limit_clear_btn, 0, wx.ALIGN_CENTER_VERTICAL)
+        limit_panel.SetSizer(limit_sizer)
+        self._limit_label = self.limit_spin
+        self.limit_apply_btn.Bind(wx.EVT_BUTTON, self.on_limit_apply)
+        self.limit_clear_btn.Bind(wx.EVT_BUTTON, self.on_limit_clear)
+        main_vbox.Add(self.limit_pane, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        self.limit_pane.Collapse()
+
+        
+
+        # --------------------------分片进度 --------------------------
+        self.grid_pane = wx.CollapsiblePane(self.panel, label="分片进度", style=wx.CP_DEFAULT_STYLE)
+        grid_panel = self.grid_pane.GetPane()
+        grid_panel.SetBackgroundColour(wx.WHITE)
+        grid_panel_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.grid_scroll = wx.ScrolledWindow(grid_panel, style=wx.VSCROLL | wx.HSCROLL)
         self.grid_scroll.SetDoubleBuffered(True)
         self.grid_scroll.SetScrollRate(GRID_CELL_SIZE, GRID_CELL_SIZE)
         self.grid_scroll.SetBackgroundColour(wx.WHITE)
-        
+
         self.grid_panel = wx.Panel(self.grid_scroll)
         self.grid_panel.SetDoubleBuffered(True)
         self.grid_panel.SetBackgroundColour(wx.WHITE)
         self.grid_panel.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.grid_panel.Bind(wx.EVT_PAINT, self.on_grid_paint)
-        
-        grid_sizer = wx.BoxSizer(wx.VERTICAL)
-        grid_sizer.Add(self.grid_panel, proportion=1, flag=wx.EXPAND)
-        self.grid_scroll.SetSizer(grid_sizer)
-        
-        main_vbox.Add(self.grid_scroll, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
-        
 
-        self.log_ctrl = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 120))
+        grid_inner_sizer = wx.BoxSizer(wx.VERTICAL)
+        grid_inner_sizer.Add(self.grid_panel, proportion=1, flag=wx.EXPAND)
+        self.grid_scroll.SetSizer(grid_inner_sizer)
+        self.grid_scroll.SetMinSize((-1, 120))
+        grid_panel_sizer.Add(self.grid_scroll, proportion=1, flag=wx.EXPAND)
+        grid_panel.SetSizer(grid_panel_sizer)
+
+     
+        main_vbox.Add(self.grid_pane, proportion=2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        self.grid_pane.Expand()  
+
+        # -------------------------- 日志 --------------------------
+        self.log_pane = wx.CollapsiblePane(self.panel, label="日志", style=wx.CP_DEFAULT_STYLE)
+        log_panel = self.log_pane.GetPane()
+        log_panel_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.log_ctrl = wx.TextCtrl(log_panel, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 110))
         self.log_ctrl.SetDoubleBuffered(True)
-        main_vbox.Add(self.log_ctrl, proportion=0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        self.log_ctrl.SetMinSize((-1, 90))
+        log_panel_sizer.Add(self.log_ctrl, proportion=1, flag=wx.EXPAND)
+        log_panel.SetSizer(log_panel_sizer)
         
+        main_vbox.Add(self.log_pane, proportion=1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
 
+        
+        for _pane in (self.info_pane, self.limit_pane, self.grid_pane, self.log_pane):
+            _pane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, lambda evt: self._relayout_on_pane_change(evt))
+
+        # -------------------------- 按钮栏 --------------------------
         btn_box = wx.BoxSizer(wx.HORIZONTAL)
         self.btn_pause = wx.Button(self.panel, label="暂停")
         self.btn_export = wx.Button(self.panel, label="导出.ndf")
@@ -961,26 +1099,31 @@ class DownloadFrame(wx.Frame):
         self.btn_export.Bind(wx.EVT_BUTTON, self.on_export_ndf_click)
         btn_box.Add(self.btn_pause, flag=wx.RIGHT, border=10)
         btn_box.Add(self.btn_export)
-        main_vbox.Add(btn_box, flag=wx.ALL | wx.ALIGN_CENTER, border=8)
-        
+        main_vbox.Add(btn_box, flag=wx.ALL | wx.ALIGN_CENTER, border=6)
+
         if self.grid_cell_pct:
             total_cols = max(1, 400 // self.cell_w)
             total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-            init_grid_w = total_cols * self.cell_w
-            init_grid_h = total_rows * self.cell_h
+            init_grid_w = max(total_cols * self.cell_w, 1)
+            init_grid_h = max(total_rows * self.cell_h, 1)
             self.grid_scroll.SetVirtualSize((init_grid_w, init_grid_h))
             self.grid_panel.SetMinSize((init_grid_w, init_grid_h))
             self.grid_scroll.Layout()
-        
+
         self.panel.SetSizer(main_vbox)
         self.panel.Layout()
-        
+      
+        self._min_win_height = self.GetSize().height
+
         if self.ctx.file_total_size > 0:
             init_pct = min(int((self.ctx.total_downloaded / self.ctx.file_total_size) * 100), 100)
             self.global_gauge.SetValue(init_pct)
-        
+            if hasattr(self, "_info_labels") and "percent" in self._info_labels:
+                self._info_labels["percent"].SetLabel(f"{init_pct}%")
+
         self.grid_panel.Refresh()
-    
+        self._update_info_panel()
+
     def append_log(self, msg: str):
         """添加日志（与 ui_push_log 函数配合使用）"""
         self.add_log(msg)
@@ -1017,14 +1160,14 @@ class DownloadFrame(wx.Frame):
         if scroll_w == 0 or scroll_h == 0:
             total_cols = max(1, 400 // self.cell_w)
             total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-            self.grid_scroll.SetVirtualSize((total_cols * self.cell_w, total_rows * self.cell_h))
-            self.grid_panel.SetMinSize((total_cols * self.cell_w, total_rows * self.cell_h))
+            self.grid_scroll.SetVirtualSize((max(total_cols * self.cell_w, 1), max(total_rows * self.cell_h, 1)))
+            self.grid_panel.SetMinSize((max(total_cols * self.cell_w, 1), max(total_rows * self.cell_h, 1)))
             return
         
         total_cols = max(1, scroll_w // self.cell_w)
         total_rows = (len(self.grid_cell_pct) + total_cols - 1) // total_cols
-        grid_w = total_cols * self.cell_w
-        grid_h = total_rows * self.cell_h
+        grid_w = max(total_cols * self.cell_w, 1)
+        grid_h = max(total_rows * self.cell_h, 1)
         
         self.grid_scroll.SetVirtualSize((grid_w, grid_h))
         self.grid_panel.SetMinSize((grid_w, max(grid_h, scroll_h)))
@@ -1068,19 +1211,111 @@ class DownloadFrame(wx.Frame):
             self.grid_panel.Refresh()
     
     def refresh_speed_info(self, speed_str: str, elapsed: str, remain: str, global_pct: int):
-        """刷新速度信息"""
+        """刷新速度和信息面板"""
         self.panel.Freeze()
         self.speed_text.SetLabel(f"总速度: {speed_str}")
         self.elapsed_text.SetLabel(f"已耗时: {elapsed}")
         self.remain_text.SetLabel(f"预计剩余: {remain}")
         self.global_gauge.SetValue(global_pct)
+        self._update_info_panel()
         self.panel.Thaw()
-    
+
+    def _relayout_on_pane_change(self, event):
+        """可折叠面板展开/收起时重新排布：
+        - 网格与日志均需弹性（proportion 2:1），上方面板展开时整体把下方内容下推；
+        - 信息/限速面板展开时同步拉长窗口，避免内容过长挤压/裁剪下层。
+        """
+        pane = event.GetEventObject()
+        if pane is self.info_pane or pane is self.limit_pane:
+        
+            wx.CallAfter(self._resize_height_for_collapsibles, True)
+        self.panel.Layout()
+        if hasattr(self, "grid_panel") and self.grid_panel is not None:
+            self.grid_panel.Refresh()
+        event.Skip()
+
+    def _resize_height_for_collapsibles(self, relayout: bool = False):
+        """根据信息/限速面板的展开状态调整窗口高度。
+        展开时按面板内容高度拉长窗口，收起时收缩回基础高度。
+        """
+        extra = 0
+        for pane in (getattr(self, "info_pane", None), getattr(self, "limit_pane", None)):
+            if pane is not None and pane.IsExpanded():
+                try:
+                    extra += pane.GetPane().GetBestSize().height + 8
+                except Exception:
+                    extra += 120
+        base = getattr(self, "_min_win_height", self.GetSize().height)
+        w, h = self.GetSize()
+        target_h = base + extra
+        if abs(target_h - h) > 4:
+            self.SetSize((w, max(target_h, 300)))
+        if relayout:
+            self.panel.Layout()
+
+    def _update_info_panel(self):
+        """刷新详细信息面板"""
+        if not hasattr(self, "_info_labels"):
+            return
+        ctx = self.ctx
+        labels = self._info_labels
+        total = ctx.file_total_size
+        done = ctx.total_downloaded
+        pct = min(int((done / max(1, total)) * 100), 100) if total > 0 else 0
+        labels["percent"].SetLabel(f"{pct}%")
+        labels["size"].SetLabel(self._fmt_size(done))
+        labels["total"].SetLabel(self._fmt_size(total) if total > 0 else "未知")
+        labels["remaining"].SetLabel(self._fmt_size(max(0, total - done)))
+        labels["threads"].SetLabel(str(ctx.jobs))
+        chunk_list = ctx.chunk_task_list or []
+        labels["chunk"].SetLabel(f"{sum(1 for t in chunk_list if t.finished)}/{len(chunk_list)}")
+        labels["save_path"].SetLabel(ctx.save_path or "--")
+        labels["filename"].SetLabel(ctx.filename or "--")
+        # 标签内容长度可能变化，展开时触发一次布局以适配长宽
+        if hasattr(self, "info_pane") and self.info_pane.IsExpanded():
+            self.info_pane.GetPane().Layout()
+
+    def on_limit_apply(self, event):
+        """应用限速设置"""
+        try:
+            mb = float(self.limit_spin.GetValue())
+        except Exception:
+            mb = 0.0
+        ctx = self.ctx
+        if mb <= 0:
+            self.on_limit_clear(event)
+            return
+        ctx.speed_limit_bps = mb * 1024 * 1024
+  
+        if ctx.rate_lock:
+            with ctx.rate_lock:
+                ctx.rate_last_refill = time.time()
+        self.status_label.SetLabel(f"已限速: {mb:.2f} MB/s")
+        self.add_log(f"已设置下载速度上限: {mb:.2f} MB/s")
+
+    def on_limit_clear(self, event):
+        """清除限速"""
+        ctx = self.ctx
+        ctx.speed_limit_bps = 0.0
+        if ctx.rate_lock:
+            with ctx.rate_lock:
+                ctx.rate_last_refill = 0.0
+        self.limit_spin.SetValue(0.0)
+        self.status_label.SetLabel("不限速")
+        self.add_log("已取消下载速度限制")
+
     def add_log(self, text: str):
-        """添加日志"""
+        """添加日志（_on_init_failed 在 ui 布局完成前也可能调用，需容错）"""
+        if not hasattr(self, "log_ctrl") or self.log_ctrl is None:
+            return
         current_time = time.strftime("%H:%M:%S", time.localtime())
-        self.log_ctrl.AppendText(f"[{current_time}] {text}\n")
-        self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
+        try:
+            self.log_ctrl.AppendText(f"[{current_time}] {text}\n")
+   
+            if hasattr(self, "log_pane") and self.log_pane.IsExpanded():
+                self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
+        except Exception:
+            pass
     
     def on_pause_click(self, event):
         """暂停/恢复 切换：暂停时停止分片线程并保存断点，恢复时续传，全程不弹窗。"""
@@ -1116,7 +1351,7 @@ class DownloadFrame(wx.Frame):
         if not ctx or not ctx.pause_requested:
             return
         ctx.pause_requested = False
-        # 复位内务状态，使新一轮调度/分片线程正常推进
+
         ctx.start_ts = time.time()
         ctx.last_speed_calc_ts = ctx.start_ts
         ctx.last_total_bytes = ctx.total_downloaded

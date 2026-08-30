@@ -1661,10 +1661,10 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
             dlg.Destroy()
 
             try:
-                import DatchDownload
+                import BatchDownload
                 parent_window = result_window
                 parent_window.download_items = download_items_data
-                DatchDownload.create_download_window(
+                BatchDownload.create_download_window(
                     parent_window,
                     urls,
                     tc,

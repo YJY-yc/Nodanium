@@ -111,6 +111,7 @@ def options(event):
         sp = wx.ScrolledWindow(parent)
         sp.SetSizer(content)
         sp.SetScrollRate(5, 5)
+        sp.SetMinSize((-1, 80))
         scroll_panels.append(sp)
         return sp, content
 

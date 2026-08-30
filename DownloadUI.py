@@ -1075,8 +1075,8 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
             dlg.Destroy()        
            
             try:
-                import DatchDownload
-                DatchDownload.create_download_window(
+                import BatchDownload
+                BatchDownload.create_download_window(
                     parent_window, 
                     batch_urls, 
                     thread_count, 
@@ -1465,13 +1465,13 @@ def on_menu_redownload(event, list_ctrl):
             if record.get("download_items"):
 
                 try:
-                    import DatchDownload
+                    import BatchDownload
  
                     download_items = record.get("download_items", [])
                     urls = [item["url"] for item in download_items]
                     
 
-                    DatchDownload.create_download_window(
+                    BatchDownload.create_download_window(
                         None,  # parent_window
                         urls, 
                         4,  # thread_count

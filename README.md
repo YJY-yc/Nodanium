@@ -65,86 +65,14 @@ Nodanium(钒合金)是一个用Python开发的，跨Windows/Linux的网络工具
 在Windows上可下载``.zip`` ``.exe``格式的程序或安装包。
 在Linux上可下载``.deb``格式的包或``.tar.gz``格式的压缩包。
 
-> [!IMPORTANT]
+
 > Linux 包基于 Python 3.12 及较新工具链构建，**最低要求 glibc ≥ 2.38**。
 > 请优先使用与你的发行版匹配的 ``.deb`` 安装包；若使用 ``.tar.gz`` 压缩包，同样需要通过下方命令补齐依赖。
 
 Linux依赖：`libwxgtk3.2-1t64`, `libc6`, `libgtk-3-0t64`, `libnotify4`
 
----
-
-### Linux .deb 安装指南
-
-#### 1. 安装 .deb 包
-
-下载 ``Nodanium-<版本>-Linux-x64.deb`` 后，在对应的发行版执行：
-
-**Ubuntu / Debian / Mint**（推荐，自动解析并安装缺失依赖）：
-```bash
-sudo apt install ./Nodanium-<版本>-Linux-x64.deb
-```
 
 
-**如果 apt 无法自动安装依赖（只安装主包）：**
-```bash
-sudo dpkg -i Nodanium-<版本>-Linux-x64.deb
-sudo apt install -f   # 修复缺失的依赖及损坏的包
-```
-
-
-#### 2. 依赖说明与手动修复
-
-安装/运行 ``Nodanium`` 需要以下依赖，**缺失时需手动安装**：
-
-| 依赖包 | 作用 | 缺失时的表现 |
-|---|---|---|
-| `libc6` | C 标准库（glibc） | 无法启动，报 ``GLIBC_2.xx not found`` |
-| `libgtk-3-0t64` | GTK3 图形库 | 窗口闪退，报 ``libgtk-3.so.0`` 找不到 |
-| `libwxgtk3.2-1t64` | wxPython 依赖的 GTK 绑定 | 导入失败，报 ``找不到 wx`` 相关库 |
-| `libnotify4` | 桌面通知 | 通知显示失败，其余功能不受影响 |
-
-**`GLIBC_2.xx not found` 类错误**：说明系统 glibc 版本过低（本项目要求 **≥ 2.38**）。请升级系统或改用较旧的发行版（如 Debian 12、Ubuntu 22.04+）。
-
-#### 3. 一键修复常见依赖
-
-如果运行时报缺少共享库，可先执行以下命令补齐基础运行库：
-
-```bash
-# Ubuntu / Debian / Mint
-sudo apt install -y libc6 libgtk-3-0t64 libwxgtk3.2-1t64 libnotify4
-
-# Fedora / Rocky / CentOS
-echo "libnotify.so.4" | xargs -r sudo dnf install -y libnotify || true
-sudo dnf install -y glibc gtk3 wxGTK3
-echo "如果系统没有 wxGTK3 包，请改用兼容的 wxGTK 版本或使用 .tar.gz 包"
-
-# Arch / Manjaro
-sudo pacman -S --needed glibc gtk3 wxgtk3 libnotify
-```
-
-#### 4. 查看依赖是否完整
-
-```bash
-dpkg -c Nodanium-<版本>-Linux-x64.deb              # 查看包内包含哪些文件
-ldd $(which nodanium) 2>/dev/null | grep "not found"   # 检查缺失的共享库
-ldd $(which nodanium) 2>/dev/null | grep wx        # 检查 wx 相关库是否解析到
-```
-
-若最后一行的 ``not found`` 有输出，说明仍有依赖未安装，按第 3 节补齐即可。
-
-#### 5. 安装后使用
-
-```bash
-nodanium              # 启动图形界面
-nodanium --version    # 查看版本
-nodanium --help       # 查看帮助
-```
-
-若命令找不到，可确认安装位置：
-```bash
-which nodanium
-# 部分安装包会把可执行文件放在 /usr/local/bin 或 /opt/nodanium/bin
-```
 
 ---
 
@@ -153,7 +81,7 @@ which nodanium
 ```
   -v, --version           显示版本信息
   -h, --help              显示此帮助信息
-  -c, --clear             清除数据目录
+  -c, --clear             清除数据目录(-y 直接清除)
   -s, --silent            静默模式启动
   -r, --resume=<路径>     从 NDF/JSON 文件恢复下载
     --path=<保存路径>      覆盖保存目录（可选）
@@ -165,9 +93,9 @@ which nodanium
     --filename=<文件名>    保存文件名
     --path=<保存路径>      文件保存路径
     --job=<线程数>         下载线程数（默认16）
-    --size=<包大小(B)>        每个线程下载的包大小（默认1MB）
+    --size=<包大小(MB)>        每个线程下载的包大小（默认1MB）
     --header=<自定义头>    自定义HTTP头（默认空）
-    --cache=<缓存时间>     缓存时间（默认10MB）
+    --cache=<缓存MB>     缓存大小
     --run=<自动运行>       是否运行（默认None）
     注意: --download 模式下，--url 和 --filename 为必填参数
   --old_download              命令行下载模式(旧版)
@@ -176,7 +104,7 @@ which nodanium
     --path=<保存路径>      文件保存路径
     --job=<线程数>         下载线程数（默认16）
 
-    注意: --old_download 模式下，--url 和 --filename 为必填参数  
+    注意: --old_download 模式下，--url 和 --filename 为必填参数   
 ```
 ### 程序目录：
 %APPDATA%\Nodanium ``Windows``
