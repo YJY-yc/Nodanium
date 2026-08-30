@@ -13,16 +13,15 @@ import platform
 sys_type = platform.system()
 
 
-# 始终以程序(exe)所在目录作为工作目录，避免开机自启时工作目录改变导致资源加载失败
 if getattr(sys, 'frozen', False):
-    # 打包成 exe 运行时，exe 所在目录即程序目录
+
     _program_dir = os.path.dirname(os.path.abspath(sys.executable))
 else:
-    # 以 Python 脚本运行时，脚本所在目录即程序目录
+
     _program_dir = os.path.dirname(os.path.abspath(__file__))
 try:
     os.chdir(_program_dir)
-    # 将程序目录加入模块搜索路径，确保相对导入有效
+
     if sys.path and _program_dir not in sys.path:
         sys.path.insert(0, _program_dir)
 except Exception as e:
@@ -294,10 +293,10 @@ if len(sys.argv) > 1:
             break
     
     if ndf_file_arg and "r" not in parsed_args and "resume" not in parsed_args:
-        parsed_args["resume"] = ndf_file_arg
+        parsed_args["resume"] = ndf_file_arg    
     
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.6.0.3\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 3.6.1.1\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()

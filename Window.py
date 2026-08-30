@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.6.0.3"
+vision = "3.6.1.1"
 logging.info('窗口模块启动')
 import wx
 import os
