@@ -30,6 +30,20 @@ config = {
 LABEL_W = 150
 CTRL_W = 180
 
+# 请求头条目模板
+KV_TEMPLATES = [
+    ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"),
+    ("Referer", "https://example.com/"),
+    ("Accept", "*/*"),
+    ("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8"),
+    ("Accept-Encoding", "gzip, deflate, br"),
+    ("Connection", "keep-alive"),
+    ("DNT", "1"),
+    ("Origin", "https://example.com"),
+    ("X-Requested-With", "XMLHttpRequest"),
+    ("RemoteAddr", ""),
+]
+
 
 def get_data_folder():
     """获取跨平台数据目录"""
@@ -38,15 +52,13 @@ def get_data_folder():
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
     elif sys_type == "Linux":
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
-    elif sys_type == "Darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     else:
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
 
 
 def on_go_to_file(event):
     if os.path.isdir(dirs):
-        # 跨平台打开文件夹
+       
         if platform.system() == "Windows":
             os.startfile(dirs)
         else:
@@ -163,6 +175,7 @@ def options(event):
         s.Add(grid, 0, wx.EXPAND | wx.ALL, 6)
         s.Add(wx.StaticText(window, label="字体预览"), 0, wx.ALL, 5)
         s.Add(font_preview, 0, wx.ALL, 5)
+        s.Add(wx.StaticLine(window, style=wx.LI_HORIZONTAL), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 8)
 
     add_static_box(window, window_sizer, "界面设置", window_content)
 
@@ -311,51 +324,408 @@ def options(event):
     storage_sizer.Add(clear_button, 0, wx.ALL | wx.EXPAND, 5)
     storage_sizer.Add(clear_history_button, 0, wx.ALL | wx.EXPAND, 5)
 
-    # ========================== 请求头 ==========================
+    # ========================== 请求头（站点式） ==========================
+    import SiteHeaders
     header_panel, header_sizer = make_scroll_panel(notebook)
 
+
+    site_data = SiteHeaders._load_data()
+    header_ui = {}
+
     def header_content(s):
-        header_label = wx.StaticText(header_panel, label="自定义请求头:")
-        header_text = wx.TextCtrl(header_panel, style=wx.TE_MULTILINE, size=(400, 120))
+        from wx.lib.scrolledpanel import ScrolledPanel
 
-        header_path = os.path.join(target_folder, "Head.ANT")
-        if os.path.exists(header_path):
-            with open(header_path, 'r', encoding='utf-8') as f:
-                header_text.SetValue(f.read())
+        # ---------- 帮助说明 ----------
+        tip = wx.StaticText(
+            header_panel,
+            label="站点式请求头：按下载链接域名匹配，自动套用对应请求头。\n"
+                  "支持宏变量 {url} {host} {domain} {filename} {filepath}；Cookie 单独粘贴。\n"
+                  "域名支持 *.example.com 通配前缀，未命中时使用全局默认请求头。")
+        tip.SetForegroundColour(wx.Colour(120, 120, 120))
+        s.Add(tip, 0, wx.ALL, 6)
 
-        default_header_label = wx.StaticText(header_panel, label="默认请求头:")
-        default_header_text = wx.TextCtrl(header_panel, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(400, 80))
-        default_header_text.SetValue(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
+        # ============ 区域一：站点规则列表 ============
+        rule_box = wx.StaticBox(header_panel, label="站点规则")
+        rule_sz = wx.StaticBoxSizer(rule_box, wx.VERTICAL)
+        rule_row = wx.BoxSizer(wx.HORIZONTAL)
 
-        def apply_default_header():
-            if wx.MessageBox("确定要用默认请求头覆盖当前请求头吗？", "确认",
-                             wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-                header_text.SetValue(default_header_text.GetValue())
-                wx.MessageBox("默认请求头已应用", "提示", wx.OK | wx.ICON_INFORMATION)
+        site_choice = wx.Choice(header_panel, choices=["__NONE__"], size=(200, -1))
+        site_choice.SetSelection(0)
+        header_ui['choice'] = site_choice
 
-        apply_header_btn = wx.Button(header_panel, label="应用默认请求头")
-        apply_header_btn.Bind(wx.EVT_BUTTON, lambda e: apply_default_header())
+        new_btn = wx.Button(header_panel, label="新建站点")
+        del_btn = wx.Button(header_panel, label="删除站点")
+        enable_chk = wx.CheckBox(header_panel, label="启用此站点")
+        enable_chk.SetValue(True)
+        header_ui['enable'] = enable_chk
 
-        def save_headers():
-            with open(header_path, 'w', encoding='utf-8') as f:
-                f.write(header_text.GetValue())
-            wx.MessageBox("请求头已保存", "提示", wx.OK | wx.ICON_INFORMATION)
+        rule_row.Add(site_choice, 1, wx.RIGHT, 5)
+        rule_row.Add(new_btn, 0, wx.RIGHT, 5)
+        rule_row.Add(del_btn, 0, wx.RIGHT, 5)
+        rule_row.Add(enable_chk, 0, wx.ALIGN_CENTER_VERTICAL)
+        rule_sz.Add(rule_row, 1, wx.EXPAND | wx.BOTTOM, 5)
 
-        save_header_btn = wx.Button(header_panel, label="保存请求头")
-        save_header_btn.Bind(wx.EVT_BUTTON, lambda e: save_headers())
+      
+        field_grid = wx.FlexGridSizer(cols=2, vgap=6, hgap=6)
+        field_grid.AddGrowableCol(1, 1)
+        field_grid.Add(wx.StaticText(header_panel, label="站点名称"), 0, wx.ALIGN_CENTER_VERTICAL)
+        name_ctrl = wx.TextCtrl(header_panel, size=(CTRL_W, -1))
+        field_grid.Add(name_ctrl, 1, wx.EXPAND)
+        field_grid.Add(wx.StaticText(header_panel, label="匹配域名"), 0, wx.ALIGN_CENTER_VERTICAL)
+        domain_ctrl = wx.TextCtrl(header_panel, size=(CTRL_W, -1))
+        domain_ctrl.SetHint("例如 *.example.com 或 example.com")
+        field_grid.Add(domain_ctrl, 1, wx.EXPAND)
+        rule_sz.Add(field_grid, 0, wx.EXPAND | wx.BOTTOM, 8)
+        header_ui['name'] = name_ctrl
+        header_ui['domain'] = domain_ctrl
 
-        btn_row = wx.BoxSizer(wx.HORIZONTAL)
-        btn_row.Add(apply_header_btn, 0, wx.RIGHT, 5)
-        btn_row.Add(save_header_btn, 0)
+        s.Add(rule_sz, 0, wx.EXPAND | wx.ALL, 8)
 
-        s.Add(header_label, 0, wx.ALL, 5)
-        s.Add(header_text, 0, wx.ALL | wx.EXPAND, 5)
-        s.Add(default_header_label, 0, wx.ALL, 5)
-        s.Add(default_header_text, 0, wx.ALL | wx.EXPAND, 5)
-        s.Add(btn_row, 0, wx.ALL, 5)
+        # ============ 区域二：请求头条目（KV） ============
+        kv_box = wx.StaticBox(header_panel, label="请求头条目（键-值）")
+        kv_sz = wx.StaticBoxSizer(kv_box, wx.VERTICAL)
+        kv_hint = wx.StaticText(header_panel, label="每行一个请求头，值中可使用宏变量。")
+        kv_hint.SetForegroundColour(wx.Colour(120, 120, 120))
+        kv_sz.Add(kv_hint, 0, wx.BOTTOM, 5)
 
-    add_static_box(header_panel, header_sizer, "请求头设置", header_content)
+        kv_scroll = ScrolledPanel(header_panel, -1, size=(620, 200))
+        kv_scroll.SetupScrolling(scroll_x=False, scroll_y=True)
+        kv_inner = wx.FlexGridSizer(cols=3, vgap=5, hgap=5)
+        kv_inner.AddGrowableCol(1, 1)
+        kv_inner.Add(wx.StaticText(kv_scroll, label="名称/键"), 0, wx.ALIGN_CENTER_VERTICAL)
+        kv_inner.Add(wx.StaticText(kv_scroll, label="值"), 0, wx.ALIGN_CENTER_VERTICAL)
+        kv_inner.Add(wx.StaticText(kv_scroll, label=""), 0)
+        kv_scroll.SetSizer(kv_inner)
+        kv_sz.Add(kv_scroll, 1, wx.EXPAND | wx.BOTTOM, 5)
+        header_ui['kv_scroll'] = kv_scroll
+        header_ui['kv_inner'] = kv_inner
+        header_ui['kv_rows'] = []  # [(key_ctrl, value_ctrl, del_btn)]
+
+        add_kv_btn = wx.Button(header_panel, label="+ 添加请求头条目")
+        kv_sz.Add(add_kv_btn, 0, wx.ALL, 2)
+        header_ui['add_kv'] = add_kv_btn
+
+        s.Add(kv_sz, 0, wx.EXPAND | wx.ALL, 8)
+
+        # ============ 区域三：Cookie ============
+        cookie_box = wx.StaticBox(header_panel, label="Cookie（分号分隔 k=v; k2=v2）")
+        cookie_sz = wx.StaticBoxSizer(cookie_box, wx.VERTICAL)
+        cookie_ctrl = wx.TextCtrl(header_panel, style=wx.TE_MULTILINE, size=(620, 70))
+        cookie_sz.Add(cookie_ctrl, 0, wx.EXPAND | wx.ALL, 4)
+
+        cookie_btn_row = wx.BoxSizer(wx.HORIZONTAL)
+        import_cookie_btn = wx.Button(header_panel, label="导入浏览器请求头")
+        cookie_btn_row.Add(import_cookie_btn, 0, wx.RIGHT, 5)
+        cookie_tip = wx.StaticText(
+            header_panel,
+            label="在浏览器开发者工具(Network)右键请求 → “复制为 cURL / 复制请求头”，\n再点此按钮粘贴导入，自动拆分 Cookie 与其余请求头。")
+        cookie_tip.SetForegroundColour(wx.Colour(120, 120, 120))
+        cookie_btn_row.Add(cookie_tip, 0, wx.ALIGN_CENTER_VERTICAL)
+        cookie_sz.Add(cookie_btn_row, 0, wx.BOTTOM, 2)
+        header_ui['import_cookie'] = import_cookie_btn
+
+        s.Add(cookie_sz, 0, wx.EXPAND | wx.ALL, 8)
+        header_ui['cookie'] = cookie_ctrl
+
+        # ============ 区域四：全局默认请求头 ============
+        gbox = wx.StaticBox(header_panel, label="全局默认请求头（未命中站点时使用）")
+        gsz = wx.StaticBoxSizer(gbox, wx.VERTICAL)
+        g_enable = wx.CheckBox(header_panel, label="启用全局默认请求头")
+        g_enable.SetValue(bool(site_data.get('default_enabled', True)))
+        gsz.Add(g_enable, 0, wx.ALL, 4)
+        header_ui['g_enable'] = g_enable
+
+        g_scroll = ScrolledPanel(header_panel, -1, size=(620, 130))
+        g_scroll.SetupScrolling(scroll_x=False, scroll_y=True)
+        g_inner = wx.FlexGridSizer(cols=3, vgap=5, hgap=5)
+        g_inner.AddGrowableCol(1, 1)
+        g_inner.Add(wx.StaticText(g_scroll, label="名称/键"), 0, wx.ALIGN_CENTER_VERTICAL)
+        g_inner.Add(wx.StaticText(g_scroll, label="值"), 0, wx.ALIGN_CENTER_VERTICAL)
+        g_inner.Add(wx.StaticText(g_scroll, label=""), 0)
+        g_scroll.SetSizer(g_inner)
+        gsz.Add(g_scroll, 1, wx.EXPAND | wx.BOTTOM, 5)
+        g_add_btn = wx.Button(header_panel, label="+ 添加全局请求头条目")
+        gsz.Add(g_add_btn, 0, wx.ALL, 2)
+        header_ui['g_scroll'] = g_scroll
+        header_ui['g_inner'] = g_inner
+        header_ui['g_rows'] = []
+        header_ui['g_add'] = g_add_btn
+
+        gsz.Add(wx.StaticText(header_panel, label="全局默认 Cookie："), 0, wx.LEFT | wx.TOP, 6)
+        g_cookie = wx.TextCtrl(header_panel, style=wx.TE_MULTILINE, size=(620, 60))
+        gsz.Add(g_cookie, 0, wx.EXPAND | wx.ALL, 4)
+        header_ui['g_cookie'] = g_cookie
+
+        s.Add(gsz, 0, wx.EXPAND | wx.ALL, 8)
+
+        # ============ 操作按钮 ============
+        action_row = wx.BoxSizer(wx.HORIZONTAL)
+        save_header_btn = wx.Button(header_panel, label="保存请求头配置")
+        export_header_btn = wx.Button(header_panel, label="导出配置")
+        action_row.Add(save_header_btn, 0, wx.RIGHT, 5)
+        action_row.Add(export_header_btn, 0)
+        s.Add(action_row, 0, wx.ALL, 8)
+        header_ui['save_btn'] = save_header_btn
+        header_ui['export_btn'] = export_header_btn
+
+        # ---------- 公共函数 ----------
+        def refresh_scroll(scroll):
+            scroll.Layout()
+            try:
+                scroll.SetupScrolling(scroll_x=False, scroll_y=True)
+                scroll.FitInside()
+            except Exception:
+                pass
+
+        def owner_inner(owner_ui):
+            return kv_inner if owner_ui is kv_scroll else g_inner
+
+        def owner_rows(owner_ui):
+            return header_ui['kv_rows'] if owner_ui is kv_scroll else header_ui['g_rows']
+
+        def append_row(owner_ui, prefill_key="", prefill_val=""):
+            inner = owner_inner(owner_ui)
+            rows = owner_rows(owner_ui)
+            key = wx.TextCtrl(owner_ui, size=(150, -1))
+            val = wx.TextCtrl(owner_ui, size=(300, -1))
+            val.SetHint("支持 {url} {domain} {filename} 等宏")
+            del_btn = wx.Button(owner_ui, label="移除", size=(52, -1))
+            row = (key, val, del_btn)
+            rows.append(row)
+            inner.Add(key, 0, wx.EXPAND)
+            inner.Add(val, 1, wx.EXPAND)
+            inner.Add(del_btn, 0, wx.ALIGN_CENTER_VERTICAL)
+            def on_del(evt):
+                try:
+                    rows.remove(row)
+                    for ctrl in row:
+                        inner.Detach(ctrl)
+                        ctrl.Destroy()
+                    owner_ui.Layout()
+                    owner_ui.Refresh()
+                    refresh_scroll(owner_ui)
+                except Exception:
+                    pass
+            del_btn.Bind(wx.EVT_BUTTON, on_del)
+            key.SetValue(prefill_key)
+            val.SetValue(prefill_val)
+            refresh_scroll(owner_ui)
+
+        add_kv_btn.Bind(wx.EVT_BUTTON, lambda e: add_templated_row(kv_scroll, 'kv_tpl_idx'))
+        g_add_btn.Bind(wx.EVT_BUTTON, lambda e: add_templated_row(g_scroll, 'g_tpl_idx'))
+
+        # 新建请求头条目时按模板循环预填充名称/值
+        def add_templated_row(owner_ui, idx_key):
+            i = header_ui.get(idx_key, 0)
+            if KV_TEMPLATES:
+                key, val = KV_TEMPLATES[i % len(KV_TEMPLATES)]
+                i = (i + 1) % len(KV_TEMPLATES)
+            else:
+                key, val = "", ""
+            header_ui[idx_key] = i
+            append_row(owner_ui, key, val)
+            refresh_scroll(owner_ui)
+
+        # ---------- 站点列表逻辑 ----------
+        # active_idx['v']：编辑器当前正在编辑的站点规则下标；-1 表示未编辑任何站点
+        # （不能直接用 site_choice.GetSelection()，因为 EVT_CHOICE 已在选中改变后触发，
+        #   若按新下标保存会把上一站点的编辑内容误写入新站点）
+        active_idx = {'v': -1}
+
+        def clear_editor():
+            name_ctrl.SetValue("")
+            domain_ctrl.SetValue("")
+            enable_chk.SetValue(True)
+            header_ui['kv_rows'].clear()
+            kv_inner.Clear(delete_windows=True)
+            add_header_labels(kv_inner, kv_scroll)
+            cookie_ctrl.SetValue("")
+            active_idx['v'] = -1
+            refresh_scroll(kv_scroll)
+
+        def add_header_labels(inner, owner):
+            inner.Add(wx.StaticText(owner, label="名称/键"), 0, wx.ALIGN_CENTER_VERTICAL)
+            inner.Add(wx.StaticText(owner, label="值"), 0, wx.ALIGN_CENTER_VERTICAL)
+            inner.Add(wx.StaticText(owner, label=""), 0)
+
+        def fill_rows(inner, rows_list, items, owner_ui):
+            rows_list.clear()
+            inner.Clear(delete_windows=True)
+            add_header_labels(inner, owner_ui)
+            for item in items or []:
+                append_row(owner_ui, item.get('key', ''), item.get('value', ''))
+            refresh_scroll(owner_ui)
+
+        def load_rule(idx):
+            rule = site_data['rules'][idx]
+            active_idx['v'] = idx
+            name_ctrl.SetValue(rule.get('name', ''))
+            domain_ctrl.SetValue(rule.get('domain', ''))
+            enable_chk.SetValue(bool(rule.get('enabled', True)))
+            fill_rows(kv_inner, header_ui['kv_rows'], rule.get('headers', []), kv_scroll)
+            cookie_ctrl.SetValue(rule.get('cookie', ''))
+
+        def save_current_to_data():
+            idx = active_idx['v']
+            if idx < 0 or idx >= len(site_data['rules']):
+                return
+            rule = site_data['rules'][idx]
+            rule['name'] = name_ctrl.GetValue().strip()
+            rule['domain'] = domain_ctrl.GetValue().strip()
+            rule['enabled'] = bool(enable_chk.GetValue())
+            headers = []
+            for (key, val, _) in header_ui['kv_rows']:
+                headers.append({'key': key.GetValue().strip(), 'value': val.GetValue()})
+            rule['headers'] = headers
+            rule['cookie'] = cookie_ctrl.GetValue()
+
+        def rebuild_choice():
+            names = [r.get('name') or r.get('domain') or '未命名' for r in site_data['rules']]
+            site_choice.SetItems(names if names else ["__NONE__"])
+            site_choice.SetSelection(0)
+            if names:
+                load_rule(0)
+            else:
+                clear_editor()
+
+        def on_new_site(evt):
+            # 先保存当前正在编辑的站点，再新建
+            save_current_to_data()
+            site_data['rules'].append(SiteHeaders.new_rule("", ""))
+            rebuild_choice()
+            site_choice.SetSelection(len(site_data['rules']) - 1)
+            load_rule(len(site_data['rules']) - 1)
+
+        def on_del_site(evt):
+            idx = active_idx['v']
+            if idx < 0 or idx >= len(site_data['rules']):
+                return
+            if wx.MessageBox("确定删除当前站点规则吗？", "确认删除",
+                             wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
+                return
+            del site_data['rules'][idx]
+            rebuild_choice()
+
+        def on_choice_change(evt):
+            idx = site_choice.GetSelection()
+            if idx < 0 or idx >= len(site_data['rules']):
+                return
+            # 先保存上一个正在编辑的站点，再切换到新站点
+            save_current_to_data()
+            load_rule(idx)
+
+        site_choice.Bind(wx.EVT_CHOICE, on_choice_change)
+        new_btn.Bind(wx.EVT_BUTTON, on_new_site)
+        del_btn.Bind(wx.EVT_BUTTON, on_del_site)
+
+        # ---------- 保存 / 导出 ----------
+        def on_save_headers(evt):
+            save_current_to_data()
+            site_data['default_enabled'] = bool(g_enable.GetValue())
+            g_headers = []
+            for (key, val, _) in header_ui['g_rows']:
+                g_headers.append({'key': key.GetValue().strip(), 'value': val.GetValue()})
+            site_data['default_headers'] = g_headers
+            site_data['default_cookie'] = g_cookie.GetValue()
+            if SiteHeaders.save_data(site_data):
+                wx.MessageBox("请求头配置已保存", "提示", wx.OK | wx.ICON_INFORMATION)
+            else:
+                wx.MessageBox("保存失败", "错误", wx.OK | wx.ICON_ERROR)
+
+        def on_export_headers(evt):
+            save_current_to_data()
+            text = SiteHeaders.export_all_as_text(site_data)
+            if not text.strip():
+                text = "（暂无启用中的站点请求头配置）"
+            dlg = wx.TextEntryDialog(
+                header_panel,
+                "导出结果（站点规则为纯文本格式）：",
+                "导出请求头配置",
+                value=text, style=wx.OK | wx.CANCEL)
+            dlg.SetSize(600, 420)
+            dlg.ShowModal()
+            dlg.Destroy()
+
+        save_header_btn.Bind(wx.EVT_BUTTON, on_save_headers)
+        export_header_btn.Bind(wx.EVT_BUTTON, on_export_headers)
+
+        # 导入浏览器请求头：粘贴 cURL 或逐行请求头，自动拆分 Cookie
+        def on_import_cookie(evt):
+            # 读取剪贴板作为默认预填内容
+            prefill = ""
+            try:
+                tobj = wx.TextDataObject()
+                if wx.TheClipboard.Open():
+                    if wx.TheClipboard.GetData(tobj):
+                        prefill = tobj.GetText()
+                    wx.TheClipboard.Close()
+            except Exception:
+                pass
+
+            dlg = wx.TextEntryDialog(
+                header_panel,
+                "粘贴浏览器导出的请求头（右键请求 → “复制为 cURL” 或 “复制请求头”）：\n"
+                "将自动识别并拆分请求头与 Cookie。",
+                "导入浏览器请求头",
+                value=prefill, style=wx.OK | wx.CANCEL)
+            dlg.SetSize(640, 420)
+            if dlg.ShowModal() != wx.ID_OK:
+                dlg.Destroy()
+                return
+            text = dlg.GetValue()
+            dlg.Destroy()
+
+            if not text.strip():
+                wx.MessageBox("未输入内容。", "提示", wx.OK | wx.ICON_INFORMATION)
+                return
+
+            parsed = SiteHeaders.parse_browser_export(text)
+            if not parsed["headers"] and not parsed["cookie"]:
+                wx.MessageBox("未能从内容中解析出请求头条目。\n请确认是“Key: Value”格式或 cURL 命令。",
+                              "提示", wx.OK | wx.ICON_INFORMATION)
+                return
+
+            # 若检测到 URL 且当前站点未填域名，则自动预填匹配域名
+            auto_filled = False
+            if parsed.get("url") and not domain_ctrl.GetValue().strip():
+                try:
+                    from urllib.parse import urlparse
+                    host = (urlparse(parsed["url"]).hostname or "").lower()
+                    if host:
+                        # 以请求 URL 的域名为初始匹配规则，用户可再修改
+                        domain_ctrl.SetValue(("*." + host) if not host.startswith("www.") else host)
+                        auto_filled = True
+                except Exception:
+                    pass
+
+            # 填充请求头条目（覆盖当前站点已有条目）
+            fill_rows(kv_inner, header_ui['kv_rows'],
+                      [{'key': k, 'value': v} for k, v in parsed["headers"]], kv_scroll)
+            # 填充 Cookie
+            if parsed["cookie"]:
+                cookie_ctrl.SetValue(parsed["cookie"])
+
+            warn = ""
+            # 未解析到 URL，无法自动填域名 -> 站点规则可能因域名不匹配而不生效，导致 401
+            if not parsed.get("url"):
+                warn = "\n\n注意：复制内容中未包含 URL，无法自动填充“匹配域名”。\n请在该规则“匹配域名”栏填写本站域名（如 example.com），否则此站点请求头不会被应用。"
+            elif not auto_filled:
+                warn = "\n\n注意：未自动填充“匹配域名”，请检查该规则的域名是否能匹配你要爬取/下载的网址。"
+
+            wx.MessageBox(
+                f"已导入 {len(parsed['headers'])} 条请求头" +
+                (f"、Cookie({len(parsed['cookie'])} 字符)" if parsed["cookie"] else "") +
+                "。\n请核验后点击下方“保存请求头配置”。" + (warn if parsed["cookie"] or parsed["headers"] else ""),
+                "导入完成", wx.OK | wx.ICON_INFORMATION)
+
+        import_cookie_btn.Bind(wx.EVT_BUTTON, on_import_cookie)
+
+        # ---------- 初始化 ----------
+        fill_rows(g_inner, header_ui['g_rows'], site_data.get('default_headers', []), g_scroll)
+        g_cookie.SetValue(site_data.get('default_cookie', ''))
+        rebuild_choice()
+
+    add_static_box(header_panel, header_sizer, "请求头设置（站点式）", header_content)
 
     # ========================== 端口 ==========================
     port_panel, port_sizer = make_scroll_panel(notebook)
@@ -381,16 +751,16 @@ def options(event):
     plugin_panel, plugin_sizer = make_scroll_panel(notebook)
     PLUGIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Nodanium-BrowserPlugin")
 
-    # 检测 Native Host 是否已注册
+    
     def host_installed():
         host_name = "com.nodanium.yujy"
         if platform.system() == "Windows":
             dirs = [os.path.join(os.getenv('LOCALAPPDATA', ''), "Google", "Chrome", "NativeMessagingHosts"),
                     os.path.join(os.getenv('APPDATA', ''), "Mozilla", "NativeMessagingHosts")]
-            # Edge 使用独立目录
+          
             dirs.append(os.path.join(os.getenv('LOCALAPPDATA', ''), "Microsoft", "Edge", "User Data", "NativeMessagingHosts"))
             return any(os.path.exists(os.path.join(d, host_name + ".json")) for d in dirs)
-        # Linux / macOS
+       
         dirs = ["$HOME/.config/google-chrome/NativeMessagingHosts",
                 "$HOME/.config/chromium/NativeMessagingHosts",
                 "$HOME/.config/microsoft-edge/NativeMessagingHosts",
@@ -399,7 +769,7 @@ def options(event):
         home = os.path.expanduser("~")
         return any(os.path.exists(os.path.join(d.replace("$HOME", home), host_name + ".json")) for d in dirs)
 
-    # 读取已有插件配置作为默认值
+ 
     plugin_cfg_path = os.path.join(target_folder, "browser-plugin-config.json")
     plugin_cfg = {"nativeSizeLimitBytes": 0, "enabled": True}
     if os.path.exists(plugin_cfg_path):
@@ -509,14 +879,14 @@ def options(event):
 
     _main_default = plugin_cfg.get("mainProgramPath", "")
     if not _main_default:
-        # 尝试默认定位：与插件目录同级的主程序二进制/入口文件
+       
         _cand_root = os.path.dirname(os.path.dirname(PLUGIN_DIR)) if os.path.basename(PLUGIN_DIR) == "Nodanium-BrowserPlugin" else PLUGIN_DIR
         for _cand in ("nodanium", "NodaniumLauncher.py", "NodaniumLauncher", "nodanium.bin"):
             _p = os.path.join(_cand_root, _cand)
             if os.path.exists(_p) and os.path.isfile(_p):
                 _main_default = _p
                 break
-    # 已全局安装到系统时，默认指向 /usr/bin/nodanium
+   
     if not _main_default and platform.system() != "Windows":
         import shutil
         _sh = shutil.which("nodanium")
@@ -584,7 +954,7 @@ def options(event):
         else:
             wx.MessageBox("未找到已注册的清单。请先点击上方\"安装 / 重新安装 Native Host\"。",
                           "提示", wx.OK | wx.ICON_INFORMATION)
-        # 同时写入配置
+  
         save_plugin_config_file()
 
     path_sync_btn = wx.Button(plugin_panel, label="把上面的路径写入浏览器注册清单")
@@ -996,7 +1366,7 @@ def options(event):
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
 
-        # 保存浏览器插件配置（Native Host 会读取 browser-plugin-config.json）
+        
         save_plugin_config_file()
 
         wx.MessageBox("设置已保存", "提示", wx.OK | wx.ICON_INFORMATION)
@@ -1013,4 +1383,4 @@ def options(event):
 
     for sp in scroll_panels:
         sp.Layout()
-        sp.SetVirtualSize(sp.GetBestVi)
+        sp.SetVirtualSize(sp.GetBestVirtualSize())

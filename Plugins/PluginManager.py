@@ -457,8 +457,6 @@ def MainPanel(parent):
         try:
             if platform.system() == "Windows":
                 subprocess.Popen(['explorer', plugins_dir])
-            elif platform.system() == "Darwin":  # macOS
-                subprocess.Popen(['open', plugins_dir])
             else:  # Linux
                 subprocess.Popen(['xdg-open', plugins_dir])
         except Exception as e:

@@ -12,7 +12,7 @@ def is_admin():
             return ctypes.windll.shell32.IsUserAnAdmin()
         except:
             return False
-    elif sys_type == "Linux" or sys_type == "Darwin":
-        # Linux/macOS: 检查是否为root用户
+    else:
+        # Linux: 检查是否为root用户
         return os.getuid() == 0
     return False

@@ -225,10 +225,7 @@ class DownloadCompleteReport(wx.Dialog):
             if self.is_windows:
                 os.startfile(path)
             else:
-                if platform.system() == "Darwin":
-                    subprocess.run(["open", path], check=True)
-                else:
-                    subprocess.run(["xdg-open", path], check=True)
+                subprocess.run(["xdg-open", path], check=True)
             return True
         except Exception as e:
             return str(e)

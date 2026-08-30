@@ -21,8 +21,6 @@ def get_data_folder():
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
     elif sys_type == "Linux":
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
-    elif sys_type == "Darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     else:
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
 
@@ -492,6 +490,17 @@ def download_file(url, download_dir, add_single_record=True, filename="", chunk_
             "Accept": "*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
+        # 站点式请求头：按下载 URL 域名合并站点请求头与 Cookie
+        try:
+            import SiteHeaders
+            resolved = SiteHeaders.resolve_headers(url, filename or "", download_dir, {
+                "User-Agent": ua, "Accept": "*/*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            })
+            if resolved:
+                headers = resolved
+        except Exception:
+            pass
         
         response = requests.get(url, stream=True, headers=headers, verify=False, timeout=(15, 90))
         if response.status_code != 200:

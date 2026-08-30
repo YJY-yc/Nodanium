@@ -470,12 +470,6 @@ def show_notification(title, message):
             subprocess.run(["notify-send", title, message], check=True)
         except Exception as e:
             logging.warning(f"发送通知失败: {str(e)}")
-    elif sys_type == "Darwin":
-        try:
-            import subprocess
-            subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], check=True)
-        except Exception as e:
-            logging.warning(f"发送通知失败: {str(e)}")
 
 
 timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
@@ -509,12 +503,8 @@ if not os.path.exists(dir_file):
         logging.warning(f"创建目录配置失败: {str(e)}")
 
 
-head_file = os.path.join(target_folder, "Head.ANT")
-default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-if not os.path.exists(head_file):
-    with open(head_file, 'w', encoding='utf-8') as f:
-        f.write(default_user_agent)
-
+# 站点式请求头配置由 SiteHeaders 模块（site_headers.json）统一管理，
+# 不再使用旧的全局 Head.ANT 文本机制。
 logging.info('数据目录已创建')
 print(target_folder)
 
@@ -533,8 +523,6 @@ if Adminchaker.is_admin():
         )
         toast.show()
     elif sys_type == "Linux":
-        show_notification(admin_title, admin_msg)
-    elif sys_type == "Darwin":
         show_notification(admin_title, admin_msg)
     logging.info('已获得管理员权限')
 
@@ -675,8 +663,6 @@ def _get_data_folder():
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
     elif sys_type == "Linux":
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
-    elif sys_type == "Darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     return os.path.join(os.path.expanduser("~"), ".Nodanium")
 
 
@@ -771,6 +757,7 @@ def _show_repair_dialog(error_text):
     dlg = wx.Dialog(None, title="启动失败 - 自动修复", size=(680, 430))
     panel = wx.Panel(dlg)
     vbox = wx.BoxSizer(wx.VERTICAL)
+    result_action = ["exit"]
 
     title = wx.StaticText(panel, label="程序窗口无法拉起")
     title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
@@ -797,7 +784,8 @@ def _show_repair_dialog(error_text):
             f"缓存已清除！\n\n已移除 {removed} 项（包含配置文件、历史记录与锁文件）。\n"
             f"失败 {failed} 项。\n\n点击确定后将重新启动程序。",
             "清除完成", wx.OK | wx.ICON_INFORMATION)
-       
+        result_action[0] = "clear"
+        dlg.EndModal(wx.ID_OK)
 
     def on_repair(event):
         missing = _check_dependencies()
@@ -809,10 +797,12 @@ def _show_repair_dialog(error_text):
         else:
             wx.MessageBox("未发现缺失的基础依赖。\n\n若仍无法启动，请尝试清除缓存。",
                           "依赖检查", wx.OK | wx.ICON_INFORMATION)
-        dlg.EndModal("repair")
+        result_action[0] = "repair"
+        dlg.EndModal(wx.ID_OK)
 
     def on_exit(event):
-        dlg.EndModal("exit")
+        result_action[0] = "exit"
+        dlg.EndModal(wx.ID_OK)
 
     btn_clear.Bind(wx.EVT_BUTTON, on_clear)
     btn_repair.Bind(wx.EVT_BUTTON, on_repair)
@@ -825,14 +815,13 @@ def _show_repair_dialog(error_text):
     vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
 
     panel.SetSizer(vbox)
-    # 将 panel 放入对话框并适配尺寸
     dlg_sizer = wx.BoxSizer(wx.VERTICAL)
     dlg_sizer.Add(panel, 1, wx.EXPAND)
     dlg.SetSizer(dlg_sizer)
     dlg.Center()
-    result = dlg.ShowModal()
+    dlg.ShowModal()
     dlg.Destroy()
-    return result
+    return result_action[0]
 
 
 def _try_relaunch():
@@ -895,5 +884,5 @@ except Exception as e:
                 wx.MessageBox("重新启动仍失败，请查看日志排查。", "仍然无法启动",
                               wx.OK | wx.ICON_ERROR)
     else:
-        pass  # 退出
+        pass  
 logging.info('主循环已结束')

@@ -13,6 +13,7 @@ import json
 import zipfile
 import shutil
 import tempfile
+import platform
 from io import BytesIO
 import urllib3
 import ssl
@@ -26,14 +27,30 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 DEFAULT_TIMEOUT = 240
-# 流式读取时的单次读超时（秒）。默认值实时连接上的数据必须在此时长内到达，否则判定连接停滞，
-# 立即按异常重试而非干等，避免“速度掉到 0.几B/s、剩余时间越拉越长、永远下不完”的假死。
+
 READ_STALL_TIMEOUT = 30
 default_retry = 100  #重试次数
 DEFAULT_RETRY = default_retry
 GRID_CELL_SIZE = 12
 NDF_SUFFIX = ".ndf"
 PROGRESS_JSON_NAME = "download_progress.json"
+
+
+def get_download_process_dir():
+    """获取下载进度文件的缓存目录（跨平台）。
+    进度 JSON 统一存放在程序数据缓存目录下的 DownloadProcess 子目录，
+    避免散落在用户保存路径中。
+    """
+    if platform.system() == "Windows":
+        base = os.path.join(os.getenv('APPDATA', ''), "Nodanium")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".Nodanium")
+    proc_dir = os.path.join(base, "DownloadProcess")
+    try:
+        os.makedirs(proc_dir, exist_ok=True)
+    except Exception:
+        pass
+    return proc_dir
 
 # -------------------------- 数据结构定义 --------------------------
 @dataclass
@@ -63,14 +80,14 @@ class DownloadCtx:
     completion_callback: Optional[Any]
     uuid: str = "" 
     speed_unit: str = "MB/s"
-    original_url: str = ""   # 最初的未处理下载链接（重定向前的地址）
+    original_url: str = ""   # 最初的未处理下载链接
     file_total_size: int = 0
     total_downloaded: int = 0
     chunk_task_list: Optional[List[ChunkTask]] = None
     task_queue: Optional[Queue] = None
     stop_event: Optional[threading.Event] = None
     global_lock: Optional[threading.Lock] = None
-    file_write_lock: Optional[threading.Lock] = None   # 跨分片文件写锁，保证 seek+write 原子
+    file_write_lock: Optional[threading.Lock] = None   # 跨分片文件写锁
     file_obj: Optional[Any] = None   # 标准文件对象
     last_speed_calc_ts: float = 0.0
     last_total_bytes: int = 0
@@ -82,6 +99,7 @@ class DownloadCtx:
     download_completed: bool = False
     _completion_handled: bool = False
     _resume_json_path: str = ""
+    pause_requested: bool = False
 
 # --------------------------  --------------------------
 
@@ -170,7 +188,7 @@ def flush_single_chunk_buffer(ctx: DownloadCtx, task: ChunkTask, do_fsync: bool 
         write_offset = task.start_byte + (task.downloaded - len(data))
         retry = 3
         write_ok = False
-        # 全部分片共享同一文件对象，写出必须加全局写锁
+    
         write_lock = getattr(ctx, "file_write_lock", None)
         while retry > 0 and not write_ok:
             if write_lock is not None:
@@ -203,8 +221,12 @@ def safe_delete_file(filepath: str, max_retry: int = 5) -> bool:
 
 # -------------------------- 断点续传JSON & NDF导入导出 --------------------------
 def dump_progress_json(ctx: DownloadCtx) -> None:
+
+    chunk_list = ctx.chunk_task_list or []
     progress_data = {
         "url": ctx.original_url if ctx.original_url else ctx.url,
+ 
+        "resolved_url": ctx.url or (ctx.original_url if ctx.original_url else ""),
         "save_path": ctx.save_path,
         "filename": ctx.filename,
         "jobs": ctx.jobs,
@@ -218,7 +240,7 @@ def dump_progress_json(ctx: DownloadCtx) -> None:
                 "end": t.end_byte,
                 "finished": t.finished,
                 "downloaded": t.downloaded
-            } for t in ctx.chunk_task_list
+            } for t in chunk_list
         ]
     }
     with open(ctx.ndf_progress_path, "w", encoding="utf-8") as f:
@@ -327,8 +349,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
             try:
                 range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
                 req_headers = {**ctx.headers, **range_header}
-                # 用 (连接超时, 单次读超时) 元组：读超时取较小值，连接长时间不吐数据
-                # 就快速判定停滞并重试，而不是干等 DEFAULT_TIMEOUT 秒导致速度掉到 0 假死。
+     
                 read_to = max(5, min(int(DEFAULT_TIMEOUT), int(getattr(ctx, 'read_stall_timeout', READ_STALL_TIMEOUT))))
                 with session.get(ctx.url, headers=req_headers, stream=True,
                                  timeout=(DEFAULT_TIMEOUT, read_to), verify=(not ctx.disable_ssl)) as resp:
@@ -359,8 +380,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                         if task.downloaded >= total_chunk_len:
                             chunk_finish_flag = True
                             break
-                        # 停滞看门狗：距上次收到数据超过阈值仍未新数据，主动抛异常走重试，
-                        # 避免整条连接僵死、速度长期为 0、剩余时间越算越长。
+                        # 停滞看门狗
                         if not ctx.stop_event.is_set() and (time.time() - last_data_ts) > read_to:
                             raise requests.exceptions.ReadTimeout("读取停滞超时，主动重试")
                     if not got_data:
@@ -375,9 +395,7 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                 time.sleep(2)
             
             else:
-                # 无进展守卫：内层循环正常结束（未抛异常、未下满）
-                # 若本轮 Range 请求未推进任何字节，说明服务器少字节/提前截断且未报错，
-                # 按失败计次重试，避免“最后一点0B/s永远下不完”的无限空转死循环。
+   
                 if not chunk_finish_flag and current_offset <= offset_before:
                     retry_times += 1
                     ui_push_log(ctx, f"分片{task.chunk_idx}本轮无数据推进 重试{retry_times}/{DEFAULT_RETRY}")
@@ -433,29 +451,28 @@ def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
         ctx.last_total_bytes = ctx.total_downloaded
         ctx.last_speed_calc_ts = now_ts
     
-    # 真实瞬时速度（可能为 0，但绝不可能是无意义的 0.x 小数）
+
     current_speed = delta_bytes / delta_ts if delta_ts > 0 else 0
-    
-    # 指数加权平滑：只平滑“抖动的真实速度”，不把停顿期的 0 人为放大或缩小成虚假小数。
+
     if not hasattr(ctx, 'last_avg_speed') or ctx.last_avg_speed is None:
         ctx.last_avg_speed = current_speed
     else:
         ctx.last_avg_speed = 0.7 * current_speed + 0.3 * ctx.last_avg_speed
     
-    # 避免在停顿重启瞬间出现无意义的极小伪速度（真实速度至少为一个网络包起步）
+
     avg_speed = ctx.last_avg_speed
     if avg_speed > 0 and avg_speed < 1.0:
         avg_speed = 0.0
 
     speed_str = format_speed(avg_speed, ctx.speed_unit)
     
-    # 计算已耗时
+ 
     elapsed_sec = now_ts - ctx.start_ts
     h, rem = divmod(elapsed_sec, 3600)
     m, s = divmod(rem, 60)
     time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
     
-    # 剩余时间：用真实速度计算，避免"越来越长"；停滞时显示计算中
+  
     if avg_speed > 0:
         remain_bytes = ctx.file_total_size - ctx.total_downloaded
         remain_sec_raw = remain_bytes / avg_speed
@@ -488,6 +505,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     if ctx.file_total_size <= 0:
         ui_push_global_status(ctx, "错误：未获取到文件总大小，无法分片下载")
         ui_push_log(ctx, "服务器未返回content-length，不支持多线程下载")
+        _ui_fail_warning(ctx, "未获取到文件总大小（服务器未返回 content-length），不支持多线程下载。")
         if ctx.completion_callback:
             wx.CallAfter(ctx.completion_callback, False, 0, ctx.uuid)
         return
@@ -503,6 +521,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     except Exception as e:
         ui_push_global_status(ctx, f"文件创建失败: {str(e)}")
         ui_push_log(ctx, f"目标路径：{target_full_path}")
+        _ui_fail_warning(ctx, f"文件创建失败，无法开始下载。\n目标路径：{target_full_path}\n错误：{str(e)}")
         if ctx.completion_callback:
             wx.CallAfter(ctx.completion_callback, False, 0, ctx.uuid)
         return
@@ -537,6 +556,14 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         ctx.file_obj.close()
         ctx.file_obj = None
 
+    # 仅为未完成的下载保存断点进度（用户点“暂停/终止”触发 stop_event 时也在此保存，
+    # 便于稍后在下载管理器恢复续传）；成功完成的下载会在此后删除该进度文件。
+    if not all(t.finished for t in ctx.chunk_task_list):
+        try:
+            dump_progress_json(ctx)
+        except Exception as e:
+            ui_push_log(ctx, f"保存断点进度失败: {str(e)}")
+
     def background_cleanup():
         try:
             ctx.task_queue.join()
@@ -549,6 +576,17 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     
     threading.Thread(target=background_cleanup, daemon=True).start()
     
+    # 用户点“暂停”触发的停止：若确未完成则保存断点、不弹窗、不回调、不关闭窗口，
+    # 仅供后续“恢复”续传；若暂停瞬间刚好下载完成则继续走正常完成流程。
+    if ctx.pause_requested and not all(t.finished for t in ctx.chunk_task_list):
+        try:
+            dump_progress_json(ctx)
+        except Exception as e:
+            ui_push_log(ctx, f"保存断点进度失败: {str(e)}")
+        if ctx.ui_frame is not None:
+            wx.CallAfter(ctx.ui_frame.on_paused)
+        return
+
 
     final_file_size = os.path.getsize(target_full_path) if os.path.exists(target_full_path) else 0
     all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
@@ -611,6 +649,13 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         
         ctx.download_completed = True
 
+        # 下载成功
+        if ctx.ndf_progress_path and os.path.exists(ctx.ndf_progress_path):
+            try:
+                os.remove(ctx.ndf_progress_path)
+            except Exception:
+                pass
+
         def show_complete_dialog_and_close():
             if ctx._completion_handled:
                 return
@@ -634,6 +679,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         failed_cnt = sum(1 for t in ctx.chunk_task_list if t.failed)
         ui_push_global_status(ctx, f"下载失败：{failed_cnt} 个分片重试耗尽")
         ui_push_log(ctx, f"内存统计总字节:{ctx.total_downloaded}，磁盘真实大小:{final_file_size}，原始文件大小:{ctx.file_total_size}")
+        _ui_fail_warning(ctx, f"下载失败：{failed_cnt} 个分片重试耗尽，无法完成下载。\n可稍后在下载管理器中点击未完成项目恢复下载。")
         if ctx.uuid:
             update_download_record_by_uuid(ctx.uuid, status="失败：分片重试耗尽", file_size=final_file_size)
         if ctx.completion_callback:
@@ -646,6 +692,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         else:
             ui_push_global_status(ctx, "下载中断，存在未完成分片，支持续传")
             ui_push_log(ctx, f"已保存断点文件：{ctx.ndf_progress_path}")
+            _ui_fail_warning(ctx, f"下载中断，存在未完成分片。\n可通过下载管理器点击该未完成项目恢复下载。", "下载中断", wx.OK | wx.ICON_WARNING)
         
         if ctx.uuid:
             update_download_record_by_uuid(ctx.uuid, status="失败：下载中断", file_size=final_file_size)
@@ -687,16 +734,19 @@ def init_download_context(
         global_lock=threading.Lock(),
         file_write_lock=threading.Lock()
     )
-    # 快照最初未处理的原始链接，重定向解析后用于写回进度文件
+   
     ctx.original_url = url or ""
-    # 让下载上下文在启动时快照当前读取停滞超时，供分片线程使用（也便于 UI 动态调参后生效）
+    
     ctx.read_stall_timeout = READ_STALL_TIMEOUT
-    ctx.ndf_progress_path = os.path.join(save_path, f"{filename}_{PROGRESS_JSON_NAME}")
+ 
+    ctx.ndf_progress_path = os.path.join(get_download_process_dir(), f"{filename}_{PROGRESS_JSON_NAME}")
     ctx._resume_json_path = resume_json_path
     ctx.last_speed_calc_ts = 0.0
     ctx.last_total_bytes = 0
     ctx.total_downloaded = 0
     ctx.file_obj = None
+    ctx.info_error = ""
+    ctx.pause_requested = False
     return ctx
 
 def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
@@ -704,9 +754,9 @@ def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
     if ctx._resume_json_path and os.path.exists(ctx._resume_json_path):
         resume_data = load_progress_json(ctx._resume_json_path)
     ctx.original_url = ctx.url or ""
+    ctx.info_error = ""
     try:
-        # 先跟随重定向获取最终真实下载地址，供后续 HEAD 与分片请求使用，
-        # 避免每个分片各自重复重定向、以及重定向后头信息不一致导致的失败。
+        
         session = requests.Session()
         session.max_redirects = 16
         final_size = 0
@@ -722,8 +772,16 @@ def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
         if ctx.file_total_size <= 0:
             head_resp = requests.head(ctx.url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl)
             ctx.file_total_size = int(head_resp.headers.get("content-length", 0) or 0)
-    except Exception:
+    except Exception as e:
+        ctx.info_error = str(e) or type(e).__name__
+        ui_push_log(ctx, f"获取文件大小异常: {ctx.info_error}")
         ctx.file_total_size = resume_data.get("file_total_size", 0)
+    else:
+        if ctx.file_total_size <= 0:
+            ctx.info_error = "服务器未返回 content-length，无法获得文件大小"
+            ui_push_log(ctx, ctx.info_error)
+        else:
+            ctx.info_error = ""
     if resume_data and "chunks" in resume_data:
         ctx.chunk_task_list = [
             ChunkTask(
@@ -807,7 +865,11 @@ class DownloadFrame(wx.Frame):
     
     def setup_grid_and_start(self):
         if not self.ctx.chunk_task_list:
-            wx.CallAfter(self._on_init_failed, "未获取到文件信息")
+            reason = self.ctx.info_error or ""
+            msg = "未获取到文件信息"
+            if reason:
+                msg += f"\n原因：{reason}"
+            wx.CallAfter(self._on_init_failed, msg)
             return
         self.is_initializing = False
         self.grid_cell_pct = [
@@ -838,6 +900,12 @@ class DownloadFrame(wx.Frame):
         self.add_log(msg)
         self.btn_pause.Enable(False)
         self.btn_export.Enable(False)
+        # 获取文件信息失败时主动弹窗告知用户，避免窗口停留在“正在获取文件信息”而静默无提示
+        _safe_message(
+            f"{msg}\n\n无法完成下载，请检查链接是否有效或网络是否正常，稍后重试。",
+            "获取文件信息失败",
+            wx.OK | wx.ICON_ERROR,
+        )
     
     def create_ui_layout(self):
         main_vbox = wx.BoxSizer(wx.VERTICAL)
@@ -887,8 +955,9 @@ class DownloadFrame(wx.Frame):
         
 
         btn_box = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_pause = wx.Button(self.panel, label="暂停/终止")
+        self.btn_pause = wx.Button(self.panel, label="暂停")
         self.btn_export = wx.Button(self.panel, label="导出.ndf")
+        self.btn_pause.Bind(wx.EVT_BUTTON, self.on_pause_click)
         self.btn_export.Bind(wx.EVT_BUTTON, self.on_export_ndf_click)
         btn_box.Add(self.btn_pause, flag=wx.RIGHT, border=10)
         btn_box.Add(self.btn_export)
@@ -1013,6 +1082,54 @@ class DownloadFrame(wx.Frame):
         self.log_ctrl.AppendText(f"[{current_time}] {text}\n")
         self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
     
+    def on_pause_click(self, event):
+        """暂停/恢复 切换：暂停时停止分片线程并保存断点，恢复时续传，全程不弹窗。"""
+        if not self.ctx:
+            return
+        ctx = self.ctx
+        if not ctx.pause_requested:
+            # ---------- 暂停 ----------
+            ctx.pause_requested = True
+            self.btn_pause.SetLabel("正在暂停...")
+            self.btn_pause.Enable(False)
+            self.btn_export.Enable(False)
+            self.status_label.SetLabel("正在暂停并保存进度...")
+            self.panel.Layout()
+            if ctx.stop_event:
+                ctx.stop_event.set()
+        else:
+            # ---------- 恢复 ----------
+            wx.CallAfter(self._resume_download)
+
+    def on_paused(self):
+        """调度线程确认暂停后回调：把按钮恢复为“恢复”等待续传。"""
+        if not self.ctx or not self.ctx.pause_requested:
+            return
+        self.btn_pause.SetLabel("恢复")
+        self.btn_pause.Enable(True)
+        self.btn_export.Enable(True)
+        self.set_status_text("已暂停，点击“恢复”继续下载")
+        self.panel.Layout()
+
+    def _resume_download(self):
+        ctx = self.ctx
+        if not ctx or not ctx.pause_requested:
+            return
+        ctx.pause_requested = False
+        # 复位内务状态，使新一轮调度/分片线程正常推进
+        ctx.start_ts = time.time()
+        ctx.last_speed_calc_ts = ctx.start_ts
+        ctx.last_total_bytes = ctx.total_downloaded
+        ctx.last_avg_speed = 0.0
+        if ctx.stop_event:
+            ctx.stop_event.clear()
+        self.btn_pause.SetLabel("暂停")
+        self.btn_pause.Enable(True)
+        self.btn_export.Enable(True)
+        self.status_label.SetLabel("正在恢复下载...")
+        self.panel.Layout()
+        self.start_schedule_thread()
+
     def on_export_ndf_click(self, event):
         """导出.ndf文件 - 立即停止下载，后台导出带进度"""
         try:
@@ -1393,6 +1510,13 @@ def Download(
         Jobs = 128
     if Jobs < 1:
         Jobs = 1
+    # 依据下载 URL 自动解析站点式请求头（全局默认+命中的站点规则），
+    # 与调用方显式传入的 Head 合并，显式传入的优先级最高。
+    try:
+        import SiteHeaders
+        Head = SiteHeaders.resolve_headers(URL, FileName, SavePath, Head)
+    except Exception:
+        pass
     download_ctx = init_download_context(
         url=URL,
         save_path=SavePath,
@@ -1418,6 +1542,7 @@ def Download(
         except Exception as e:
             err_msg = f"获取文件信息失败: {str(e)}"
             print(err_msg)
+            download_ctx.info_error = download_ctx.info_error or str(e)
             wx.CallAfter(frame._on_init_failed, err_msg)
     
     threading.Thread(target=_bg_fetch_and_start, daemon=True).start()
@@ -1427,6 +1552,14 @@ def Download(
 def _safe_message(msg, title="提示", style=wx.OK):
     if wx.GetApp() is not None:
         wx.MessageBox(msg, title, style)
+    else:
+        print(f"[{title}] {msg}")
+
+
+def _ui_fail_warning(ctx, msg, title="下载失败", style=wx.OK | wx.ICON_ERROR):
+    """后台下载线程内安全地弹出失败提示（通过 wx.CallAfter 切回主线程）。"""
+    if wx.GetApp() is not None:
+        wx.CallAfter(wx.MessageBox, msg, title, style)
     else:
         print(f"[{title}] {msg}")
 
@@ -1499,6 +1632,9 @@ def ResumeDownload(
 
 
     url = progress_data["url"]
+    # 优先使用重定向解析后的最终地址恢复，避免反复重定向或短链接过期导致恢复失败
+    if progress_data.get("resolved_url") and progress_data["resolved_url"] != url:
+        url = progress_data["resolved_url"]
     original_save_path = progress_data.get("save_path", "")
     filename = progress_data["filename"]
     file_total_size = progress_data.get("file_total_size", 0)
@@ -1508,6 +1644,12 @@ def ResumeDownload(
     chunk_size = Size if Size > 0 else progress_data.get("chunk_size", 10 * 1024 * 1024)
     cache_mb = Cache if Cache > 0 else 32.0
     headers = Head if Head else {}
+    # 依据 URL 解析站点式请求头，合并调用方显式 Head
+    try:
+        import SiteHeaders
+        headers = SiteHeaders.resolve_headers(url, filename, headers.get("__save_path", "") or original_save_path, headers)
+    except Exception:
+        pass
 
 
     if jobs > 128:
@@ -1631,7 +1773,10 @@ def ResumeDownload(
         app = wx.GetApp()
     if app is None:
         app = wx.App(False)
-    DownloadFrame(ctx=download_ctx)
+    resume_frame = DownloadFrame(ctx=download_ctx)
+    # fetch_file_size_and_setup_chunks 已同步执行并完成分片，此处需手动启动调度线程，
+    # 否则窗口会一直停留在“正在获取文件信息”而无法开始下载。
+    wx.CallAfter(resume_frame.setup_grid_and_start)
     app.MainLoop()
 
   

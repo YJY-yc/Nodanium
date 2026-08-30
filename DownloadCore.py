@@ -48,6 +48,15 @@ class DownloadFrame(wx.Frame):
         self.file_size = 0
         self.completed_chunks = [False] * thread_count
         self.completion_callback = completion_callback 
+
+        # 依据下载 URL 解析站点式请求头（全局默认+命中的站点规则+默认UA），
+        # 供分片下载与探测一并完整发送。
+        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"}
+        try:
+            import SiteHeaders
+            self.headers = SiteHeaders.resolve_headers(url, filename, save_path, self.headers)
+        except Exception:
+            pass
         
         self.create_ui()
         self.Bind(wx.EVT_CLOSE, self.on_close)
@@ -196,7 +205,8 @@ class DownloadFrame(wx.Frame):
         if self.stop_event.is_set():
             return
         
-        headers = {'Range': f'bytes={byte_range[0]}-{byte_range[1]}'}
+        headers = dict(self.headers)  # 携带站点式请求头
+        headers['Range'] = f'bytes={byte_range[0]}-{byte_range[1]}'
         retry = 0
         
         while retry < self.retry_count and not self.stop_event.is_set():
@@ -274,6 +284,7 @@ class DownloadFrame(wx.Frame):
           
             with session.get(
                 self.url, 
+                headers=self.headers,
                 allow_redirects=True, 
                 timeout=self.timeout, 
                 verify=not self.disable_ssl,
@@ -285,7 +296,7 @@ class DownloadFrame(wx.Frame):
                 if final_url != self.url:
                     self.log_message(f"已重定向到: {final_url}")
                     self.url = final_url 
-            response = requests.head(self.url, timeout=self.timeout, verify=not self.disable_ssl)
+            response = requests.head(self.url, headers=self.headers, timeout=self.timeout, verify=not self.disable_ssl)
             self.file_size = int(response.headers.get('content-length', 0))
             self.update_status(f"文件大小: {self.file_size} 字节,合{self.file_size / 1024 / 1024}MB")
             

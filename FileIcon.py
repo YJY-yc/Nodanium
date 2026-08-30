@@ -34,10 +34,6 @@ def get_file_icon(file_path, size=32):
         result = get_linux_icon(file_path, size)
         if result is not None:
             return result
-    elif sys_type == "Darwin":
-        result = get_macos_icon(file_path, size)
-        if result is not None:
-            return result
     
     # 如果系统图标获取失败，使用备用方案
     if sys_type == "Windows":
@@ -507,50 +503,6 @@ def get_linux_icon(file_path, size=32):
         return None
     except Exception as e:
         logging.debug(f"Linux图标获取失败: {e}")
-        return None
-
-def get_macos_icon(file_path, size=32):
-    """获取macOS系统图标"""
-    try:
-        from Cocoa import NSWorkspace, NSImage
-        
-        # 确保路径是绝对路径
-        if not os.path.isabs(file_path):
-            file_path = os.path.abspath(file_path)
-        
-        workspace = NSWorkspace.sharedWorkspace()
-        
-        # 检查文件是否存在
-        if os.path.exists(file_path):
-            # 文件存在，获取真实图标
-            icon = workspace.iconForFile_(file_path)
-        else:
-            # 文件不存在，使用UTI获取图标
-            uti = workspace.typeOfFile_error_(file_path, None)
-            if uti:
-                icon = workspace.iconForFileType_(uti)
-            else:
-                return None
-        
-        if not icon:
-            return None
-        
-        # 设置图标大小
-        icon.setSize_((size, size))
-        rep = icon.representations()[0]
-        
-        # 转换为wx.Bitmap
-        import io
-        tiff_data = rep.TIFFRepresentation()
-        img = wx.Image(size, size)
-        img.LoadFile(io.BytesIO(tiff_data), wx.BITMAP_TYPE_TIFF)
-        return wx.Bitmap(img)
-        
-    except ImportError as e:
-        logging.debug(f"macOS图标获取失败（pyobjc未安装）: {e}")
-        return None
-    except Exception as e:
-        logging.debug(f"macOS图标获取失败: {e}")
         return None
 
 def load_icon_from_path(icon_path, size):

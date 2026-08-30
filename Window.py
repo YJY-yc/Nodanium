@@ -33,9 +33,6 @@ if sys_type == "Windows":
 elif sys_type == "Linux":
     home_path = os.path.expanduser("~")
     target_folder = os.path.join(home_path, ".Nodanium")
-elif sys_type == "Darwin":
-    home_path = os.path.expanduser("~")
-    target_folder = os.path.join(home_path, "Library", "Application Support", "Nodanium")
 else:
     target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
 
@@ -246,17 +243,15 @@ check=None
 
 def on_analyze(event):
     global url_text_analyze,time_ctrl,check
-    head="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    head = default_ua
     try:
-        header_path = os.path.join(target_folder, "Head.ANT")
-        if os.path.exists(header_path):
-            with open(header_path, 'r', encoding='utf-8') as f:
-                head=f.read()
-    except:
-        head="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+        import SiteHeaders
+        head = SiteHeaders.resolve_headers(url_text_analyze.GetValue())
+    except Exception:
+        pass
 
-    
-    analyze.on_analyze_button(url_text_analyze.GetValue(), head,int(time_ctrl.GetValue()),check.GetValue())
+    analyze.on_analyze_button(url_text_analyze.GetValue(), head, int(time_ctrl.GetValue()), check.GetValue())
 
 def on_go_to_file(event):
         
@@ -292,12 +287,15 @@ def on_download_button(event):
     with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(history, f, ensure_ascii=False, indent=4)
     
-    header_path = os.path.join(target_folder, "Head.ANT")
-    if os.path.exists(header_path):
-        with open(header_path, 'r', encoding='utf-8') as f:
-            he=f.read()
+    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    he = default_ua
+    try:
+        import SiteHeaders
+        he = SiteHeaders.resolve_headers(url, filename, dirs)
+    except Exception:
+        pass
 
-    CommanDownload.download_file(url, dirs+filename,he)
+    CommanDownload.download_file(url, dirs+filename, he)
     print(f"URL: {url}, 文件名: {filename}")
     logging.debug(f"URL: {url}, 文件名: {filename}")
     frame.SetStatusText("")
@@ -362,6 +360,46 @@ def on_packet_size_enter(frame, event):
 
 #======================
 
+
+def _clipboard_url():
+    """读取剪贴板文本；若它看起来像下载链接则返回该链接，否则返回 None。"""
+    try:
+        cb = wx.Clipboard.Get()
+        if cb is None:
+            return None
+        if not cb.Open():
+            return None
+        try:
+            buf = wx.TextDataObject()
+            if cb.GetData(buf):
+                txt = buf.GetText().strip()
+                if _is_download_url(txt):
+                    return txt
+        finally:
+            cb.Close()
+    except Exception:
+        pass
+    return None
+
+
+def _is_download_url(text):
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 8:
+        return False
+    return t.startswith(('http://', 'https://', 'ftp://', 'ftps://'))
+
+
+def _clipboard_new_download(frame):
+    """托盘菜单‘从剪贴板新建下载’时的动作：
+    若剪贴板为下载链接则自动填入，否则仅打开新建下载窗口。"""
+    try:
+        prefill_url = _clipboard_url()
+        wx.CallAfter(lambda: DownloadUI.trigger_new_download(frame, prefill_url=prefill_url))
+    except Exception as e:
+        print(f"从剪贴板新建下载错误: {e}")
+        logging.error(f"从剪贴板新建下载错误: {e}")
 
 
 def create_tray_icon(frame):
@@ -438,6 +476,8 @@ def create_tray_icon(frame):
         show_item = menu.Append(wx.ID_ANY, "显示窗口")
         hid_item = menu.Append(wx.ID_ANY, "隐藏窗口")
         menu.AppendSeparator()  
+        dwn_item = menu.Append(wx.ID_ANY, "从剪贴板新建下载")
+        menu.AppendSeparator()  
         update_item = menu.Append(wx.ID_ANY, "检测更新")
         opt_item = menu.Append(wx.ID_ANY, "首选项")
         menu.AppendSeparator()  
@@ -462,9 +502,13 @@ def create_tray_icon(frame):
         def opt_check(event):
             options.options(event)
             
+        def on_clip_download(event):
+            _clipboard_new_download(frame)
+            
         tray.Bind(wx.EVT_MENU, on_show, show_item)
         tray.Bind(wx.EVT_MENU, on_exit, exit_item)
         tray.Bind(wx.EVT_MENU, on_hid, hid_item)
+        tray.Bind(wx.EVT_MENU, on_clip_download, dwn_item)
         tray.Bind(wx.EVT_MENU, on_check, update_item)
         tray.Bind(wx.EVT_MENU, opt_check, opt_item)
         
@@ -490,6 +534,9 @@ def create_tray_icon(frame):
             logging.error(f"托盘菜单错误: {e}")
     
     tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_DOWN, on_right_click)
+
+    # 托盘菜单项“从剪贴板新建下载”：在 Linux AppIndicator 等仅支持菜单的托盘中同样可用。
+
     return tray  
 def Window(silence=False):
     global url_text_1, filename_text_1,check
@@ -531,7 +578,7 @@ def Window(silence=False):
         frame.Hide()
         
     frame.Bind(wx.EVT_CLOSE, on_close)
-    
+
     frame.SetBackgroundColour(wx.Colour(200, 200, 200))
     listbook = wx.Treebook(frame, style=wx.TB_LEFT)
     listbook.SetBackgroundColour(wx.Colour(200, 200, 200))

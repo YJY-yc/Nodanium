@@ -30,8 +30,6 @@ def get_data_folder():
     t = platform.system()
     if t == "Windows":
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
-    elif t == "Darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     return os.path.join(os.path.expanduser("~"), ".Nodanium")
 
 

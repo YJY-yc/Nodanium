@@ -10,7 +10,10 @@ def download_file(url, local_path, headers=None):
     global dirs
     print(headers)
     
-    if headers is None or len(headers) <5:
+    if isinstance(headers, dict):
+        # 已为完整的请求头 dict（含站点式请求头/Cookie），直接使用
+        headers = dict(headers)
+    elif headers is None or len(headers) < 5:
         print("使用默认请求头")
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
         headers = {"user-agent": ua}

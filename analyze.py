@@ -195,6 +195,25 @@ def to_absolute_url(href, base_url):
     else:
         return parsed_base.scheme + '://' + parsed_base.netloc + '/' + href
 
+def _resolve_headers(headers, url=None):
+    """归一化外部传入的请求头：接受 dict 或 UA 字符串，空则回退默认 UA；
+    再依据 URL 通过 SiteHeaders 合并站点式请求头（含 Cookie），保证爬取时完整发送。"""
+    if headers is None:
+        base = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    elif isinstance(headers, str):
+        base = {"user-agent": headers}
+    else:
+        base = dict(headers)
+    if url:
+        try:
+            import SiteHeaders
+            base = SiteHeaders.resolve_headers(url, base_headers=base)
+        except Exception:
+            pass
+    return base
+
 def analyze_webpage(url, headers=None, timeout=10):
     global progress_dialog
     print(timeout)
@@ -204,12 +223,7 @@ def analyze_webpage(url, headers=None, timeout=10):
         progress_dialog = wx.ProgressDialog("网页分析进度", "正在初始化...", maximum=100,
                                           style=wx.PD_AUTO_HIDE )
 
-        if headers is None:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-            }
-        else:
-            headers = {"user-agent": headers}
+        headers = _resolve_headers(headers, url)
 
         progress_dialog.Update(10, "正在获取网页内容...")
         response = requests.get(url, headers=headers, data={}, verify=False, timeout=timeout)
@@ -259,11 +273,9 @@ def analyze_webpage(url, headers=None, timeout=10):
     except Exception as e:
         return {'error': str(e)}
 
-def get_total_pages(url):
+def get_total_pages(url, headers=None):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = _resolve_headers(headers, url)
         response = requests.get(url, headers=headers, verify=False, timeout=15)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -327,11 +339,9 @@ def generate_page_urls(base_url, start_page, end_page):
 
     return urls
 
-def _check_content_type_downloadable(url, timeout=8):
+def _check_content_type_downloadable(url, headers=None, timeout=8):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = _resolve_headers(headers, url)
         parsed = urlparse(url)
         head_url = parsed._replace(query=parsed.query).geturl()
         response = requests.head(head_url, headers=headers, verify=False, timeout=timeout, allow_redirects=True)
@@ -669,21 +679,9 @@ def _extract_urls_from_json(data, add_fn, depth=0):
                         if has_ext or len(item) < 200:
                             add_fn(item)
 
-def crawl_page_for_download_links(url):
+def crawl_page_for_download_links(url, headers=None):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-        }
+        headers = _resolve_headers(headers, url)
         response = requests.get(url, headers=headers, verify=False, timeout=15)
         response.encoding = 'utf-8'
 
@@ -775,7 +773,7 @@ def crawl_page_for_download_links(url):
             all_candidates = list(seen)
             for link in all_candidates:
                 if not is_download_link(link):
-                    if _check_content_type_downloadable(link):
+                    if _check_content_type_downloadable(link, headers=headers):
                         add_download(link, "")
 
         if not meaningful_downloads:
@@ -939,7 +937,15 @@ def _crawl_spa_with_selenium(url, headers, download_links, seen):
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        _ua = None
+        if headers:
+            if isinstance(headers, str):
+                _ua = headers
+            else:
+                _ua = headers.get('user-agent') or headers.get('User-Agent')
+        chrome_options.add_argument(
+            '--user-agent=' + (_ua or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        )
         chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
         driver = webdriver.Chrome(options=chrome_options)
@@ -1367,7 +1373,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
                       f"链接数量: {len(result['links'])}\n"
                       f"图片数量: {len(result['images'])}\n"
                       f"分析用时: {result['elapsed_time']:.2f}秒\n"
-                      f"请求头User-Agent：{headers}")
+                      f"请求头：{headers}")
 
     # ==================== 链接面板（列表样式 + 批量下载） ====================
     links_panel_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -1451,7 +1457,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         wx.CallAfter(lambda: result_window.SetStatusText(f"已从初始页面添加 {count} 个下载链接，正在自动爬取..."))
 
         def do_auto_crawl():
-            found = crawl_page_for_download_links(url_l)
+            found = crawl_page_for_download_links(url_l, headers=headers)
             new_count = 0
             for link in found:
                 if link["url"] not in existing and matches_filter(link["url"]):
@@ -1529,7 +1535,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         wx.CallAfter(result_window.SetStatusText, "正在检测页数...")
 
         def do_detect():
-            total = get_total_pages(url_l)
+            total = get_total_pages(url_l, headers=headers)
             wx.CallAfter(lambda: to_spin.SetValue(total))
             wx.CallAfter(lambda: from_spin.SetValue(1))
             wx.CallAfter(lambda: result_window.SetStatusText(f"检测到共 {total} 页"))
@@ -1544,7 +1550,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         end_page = to_spin.GetValue()
 
         if page_mode == 0:
-            total = get_total_pages(url_l)
+            total = get_total_pages(url_l, headers=headers)
             end_page = total
             wx.CallAfter(lambda: to_spin.SetValue(total))
 
@@ -1566,7 +1572,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         def do_crawl():
             existing_urls = {item["url"] for item in link_items}
             for i, page_url in enumerate(page_urls):
-                found = crawl_page_for_download_links(page_url)
+                found = crawl_page_for_download_links(page_url, headers=headers)
                 page_num = start_page + i
                 for link in found:
                     if link["url"] not in existing_urls and matches_filter(link["url"]):

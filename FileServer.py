@@ -26,8 +26,6 @@ if sys_type == "Windows":
     target_folder = os.path.join(os.getenv('APPDATA', ''), "Nodanium")
 elif sys_type == "Linux":
     target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
-elif sys_type == "Darwin":
-    target_folder = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
 else:
     target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
 

@@ -126,8 +126,6 @@ def flush_dns_cache():
                 subprocess.run(['nscd', '-i', 'hosts'], capture_output=True)
             except FileNotFoundError:
                 pass
-    elif sys_type == "Darwin":
-        subprocess.run(['dscacheutil', '-flushcache'], capture_output=True)
 
 def get_dns_cache_windows():
     """获取Windows DNS缓存（Windows专用）"""

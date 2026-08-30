@@ -44,16 +44,148 @@ def get_data_folder():
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
     elif sys_type == "Linux":
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
-    elif sys_type == "Darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Nodanium")
     else:
         return os.path.join(os.path.expanduser("~"), ".Nodanium")
 DATA_FOLDER = get_data_folder()
 HISTORY_FILE = os.path.join(DATA_FOLDER, 'History.json')
+PROCESS_DIR = os.path.join(DATA_FOLDER, 'DownloadProcess')
+
+def ensure_process_dir():
+    """确保下载进度缓存目录存在"""
+    try:
+        os.makedirs(PROCESS_DIR, exist_ok=True)
+    except Exception:
+        pass
+    return PROCESS_DIR
+
+def is_fat_filesystem(path):
+    """判断目标路径所在文件系统是否为 FAT（FAT/FAT32/exFAT）。
+    FAT 文件系统不支持稀疏文件，应使用旧版下载引擎。
+    Windows 用 GetVolumeInformationW，Linux 用 statvfs/st_blocks 启发式判断。
+    """
+    if not path:
+        return False
+    # 确保路径指向存在的目录
+    probe = path
+    if os.path.isfile(probe):
+        probe = os.path.dirname(probe)
+    sys_type = platform.system()
+    try:
+        if sys_type == "Windows":
+            try:
+                import ctypes
+                drive = os.path.splitdrive(os.path.abspath(probe))[0]
+                if not drive:
+                    return False
+                fs = ctypes.create_unicode_buffer(260)
+                buf = ctypes.create_unicode_buffer(256)
+                max_component = ctypes.c_uint32(0)
+                flags = ctypes.c_uint32(0)
+                ok = ctypes.windll.kernel32.GetVolumeInformationW(
+                    drive + '\\',
+                    buf, 256, None, ctypes.byref(max_component),
+                    ctypes.byref(flags), fs, 260)
+                if ok:
+                    fsname = (fs.value or "").lower()
+                    return any(k in fsname for k in ("fat", "exfat"))
+                return False
+            except Exception:
+                return False
+        elif sys_type == "Linux":
+            # 用 df -T 查询文件系统类型
+            try:
+                import subprocess
+                base = probe
+                if not os.path.isdir(base):
+                    base = os.path.dirname(os.path.abspath(probe))
+                out = subprocess.run(
+                    ['df', '-T', base], capture_output=True, text=True, timeout=5
+                ).stdout
+                import re
+                lines = out.strip().split('\n')
+                for line in lines[1:]:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        fstype = parts[1].lower()
+                        if any(k in fstype for k in ("vfat", "fat", "exfat", "fuseblk")):
+                            return True
+                return False
+            except Exception:
+                return False
+        else:
+            return False
+    except Exception:
+        return False
+
+def resolve_resume_file(record):
+    """解析下载记录对应的断点进度文件路径。
+    优先使用缓存目录 DownloadProcess 下的进度文件，
+    兼容旧版本存放在保存路径下的进度文件。
+    """
+    filename = record.get("filename", "")
+    save_path = record.get("save_path", "")
+    if not filename:
+        return ""
+    json_name = f"{filename}_download_progress.json"
+    cache_file = os.path.join(PROCESS_DIR, json_name)
+    if os.path.exists(cache_file):
+        return cache_file
+    # 兼容旧版本：保存路径下的进度文件
+    if save_path:
+        legacy = os.path.join(save_path, json_name)
+        if os.path.exists(legacy):
+            return legacy
+    return ""
+
+
+# 已下载完成的颜色
+def _apply_record_visual(list_ctrl, index, record):
+    """对文件名列应用可视化样式：
+    - 已完成且文件存在 -> 文件名变绿
+    - 已完成但文件被删除 -> 文件名删除线（灰色）
+    """
+    status = record.get("status", "")
+    file_path = os.path.join(record.get("save_path", ""), record.get("filename", ""))
+    try:
+        if status == "已完成":
+            if os.path.exists(file_path):
+                list_ctrl.SetItemTextColour(index, wx.Colour(0, 140, 60))
+            else:
+                # 文件被删除，使用删除线字体
+                font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+                font.SetStrikethrough(True)
+                list_ctrl.SetItemFont(index, font)
+                list_ctrl.SetItemTextColour(index, wx.Colour(140, 140, 140))
+    except Exception:
+        pass
+
+
+# 未完成项目需要展示背景进度条的 status 集合
+INCOMPLETE_STATUSES = ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断")
+
+
+def _get_record_progress(record):
+    """读取进度文件，返回未完成项目的下载进度百分比（0~100），无则返回 None。"""
+    resume_file = resolve_resume_file(record)
+    if not resume_file or not os.path.exists(resume_file):
+        return None
+    try:
+        with open(resume_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        total = int(data.get("file_total_size", 0) or 0)
+        done = int(data.get("total_downloaded", 0) or 0)
+        if total <= 0:
+            return None
+        return min(100, int(done / total * 100))
+    except Exception:
+        return None
+
 
 from DownloadCore import download_window
 logging.info('加载 DownloadUI 模块')
 download_history = []
+_download_list_ctrl = None
+_image_list_ctrl = None
 
 def generate_uuid():
     """生成唯一识别码UUID"""
@@ -223,15 +355,15 @@ def refresh_download_list(list_ctrl, image_list):
         else:
             size_str = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
         
-      
+       
         list_ctrl.SetItem(index, 1, record["filename"])
+        _apply_record_visual(list_ctrl, index, record)
         
      
         list_ctrl.SetItem(index, 2, size_str)
         
  
         status = record["status"]
-        
 
         if record.get("url") == "批量下载文件夹":
             file_count = record.get("file_count", 0)
@@ -249,6 +381,14 @@ def refresh_download_list(list_ctrl, image_list):
                 status = f"{status}{progress} - {success_count}成功/{failed_count}失败"
             else:
                 status = f"{status}{progress}"
+        else:
+            # 非批量：所有未下载完毕的项目一律显示进度百分比（而非“失败/部分完成”等文字）
+            if status in INCOMPLETE_STATUSES and record.get("filename"):
+                pct = _get_record_progress(record)
+                if pct is not None:
+                    status = f"{pct}%"
+                else:
+                    status = f"{status}（未完成）"
         
         list_ctrl.SetItem(index, 3, status)
         list_ctrl.SetItem(index, 4, record["save_path"])
@@ -256,6 +396,7 @@ def refresh_download_list(list_ctrl, image_list):
 
 def create_download_panel(parent):
     global HISTORY_FILE
+    global _download_list_ctrl, _image_list_ctrl
     panel =parent
     
 
@@ -290,7 +431,8 @@ def create_download_panel(parent):
   
     image_list = wx.ImageList(32, 32)
     download_list.AssignImageList(image_list, wx.IMAGE_LIST_SMALL)
-    
+    _download_list_ctrl = download_list
+    _image_list_ctrl = image_list
     download_list.InsertColumn(0, "", width=45)
     download_list.InsertColumn(1, "文件名", width=200)
     download_list.InsertColumn(2, "大小", width=100)
@@ -335,12 +477,9 @@ def create_download_panel(parent):
         if sys_type == "Windows":
             os.startfile(default_save_path)
         else:
-            # Linux/macOS 使用 xdg-open 或 open 命令
+            # Linux 使用 xdg-open 命令
             try:
-                if sys_type == "Darwin":
-                    subprocess.run(['open', default_save_path])
-                else:
-                    subprocess.run(['xdg-open', default_save_path])
+                subprocess.run(['xdg-open', default_save_path])
             except Exception as ex:
                 wx.MessageBox(f"无法打开文件夹: {str(ex)}", "错误", wx.OK | wx.ICON_ERROR)
     
@@ -360,6 +499,7 @@ def create_context_menu(list_ctrl):
     open_folder_item = menu.Append(wx.ID_ANY, "在文件夹中显示")
     show_items_item = menu.Append(wx.ID_ANY, "显示包含的项目") 
     redownload_item = menu.Append(wx.ID_ANY, "重新下载")
+    resume_item = menu.Append(wx.ID_ANY, "恢复下载")
     menu.AppendSeparator()
     
    
@@ -382,6 +522,7 @@ def create_context_menu(list_ctrl):
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_open_folder(e, list_ctrl), open_folder_item)
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_show_items(e, list_ctrl), show_items_item)  # 绑定新菜单项
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_redownload(e, list_ctrl), redownload_item)
+    list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_resume(e, list_ctrl), resume_item)
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_export(e, list_ctrl), export_item)  # 绑定导出菜单项
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_copy_url(e, list_ctrl), copy_url_item)
     list_ctrl.Bind(wx.EVT_MENU, lambda e: on_menu_copy_filename(e, list_ctrl), copy_filename_item)
@@ -402,7 +543,13 @@ def on_context_menu(event, list_ctrl, menu):
             if record.get("url") == "批量下载文件夹":
                 menu.FindItemByPosition(2).Enable(True)  
             else:
-                menu.FindItemByPosition(2).Enable(False) 
+                menu.FindItemByPosition(2).Enable(False)
+            # 是否可恢复下载：未完成记录且存在断点进度文件
+            is_resumable = (
+                record.get("status", "") in ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断")
+                and bool(resolve_resume_file(record))
+            )
+            menu.FindItemByPosition(3).Enable(is_resumable)
         
         list_ctrl.PopupMenu(menu, pos)
 
@@ -557,11 +704,24 @@ def refresh_download_list(list_ctrl, image_list):
             size_str = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
         
         list_ctrl.SetItem(index, 1, record["filename"])
+        _apply_record_visual(list_ctrl, index, record)
         list_ctrl.SetItem(index, 2, size_str)
-        list_ctrl.SetItem(index, 3, record["status"])
+
+        status = record["status"]
+        if record.get("url") == "批量下载文件夹":
+            pass
+        else:
+            # 所有未下载完毕的项目一律显示进度百分比
+            if status in INCOMPLETE_STATUSES and record.get("filename"):
+                pct = _get_record_progress(record)
+                if pct is not None:
+                    status = f"{pct}%"
+                else:
+                    status = f"{status}（未完成）"
+        list_ctrl.SetItem(index, 3, status)
         list_ctrl.SetItem(index, 4, record["save_path"])
         list_ctrl.SetItem(index, 5, record["timestamp"])
-def on_new_download(parent, list_ctrl, image_list):
+def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
     
     import os
     import threading
@@ -614,6 +774,13 @@ def on_new_download(parent, list_ctrl, image_list):
     filename_sizer.Add(filename_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     filename_sizer.Add(filename_text, 1, wx.ALL, 5)
     single_sizer.Add(filename_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
+    if prefill_url:
+        url_text.SetValue(prefill_url)
+        try:
+            filename_text.SetValue(get_filename_from_url(prefill_url))
+        except Exception:
+            pass
     
 
     path_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -818,27 +985,54 @@ def on_new_download(parent, list_ctrl, image_list):
               
                 def on_download_completed(success, file_size, uuid=None):
     
-                    if uuid:
-                        if success:
-                            update_download_record_by_uuid(uuid, status="已完成", file_size=file_size)
-                        else:
-                            if file_size > 0:
-                                update_download_record_by_uuid(uuid, status="部分完成", file_size=file_size)
+                    def set_status(u):
+                        if u:
+                            if success:
+                                update_download_record_by_uuid(u, status="已完成", file_size=file_size)
                             else:
-                                update_download_record_by_uuid(uuid, status="失败")
+                                if file_size > 0:
+                                    update_download_record_by_uuid(u, status="部分完成", file_size=file_size)
+                                else:
+                                    update_download_record_by_uuid(u, status="失败")
+
+                    if uuid:
+                        set_status(uuid)
+                    else:
+                        # 旧版下载引擎不回调 uuid，按 url+文件名+保存路径匹配记录
+                        for u in download_history:
+                            if (u.get("url") == url and
+                                u.get("filename") == filename and
+                                u.get("save_path") == save_path):
+                                set_status(u.get("uuid"))
+                                break
                     # 刷新列表显示
                     wx.CallAfter(refresh_download_list, list_ctrl, image_list)
                 
                 def start_download():
                     try:
-                    
                         record = add_download_record(url, filename, save_path, "下载中", 0)
-                        record_uuid = record["uuid"]  
+                        record_uuid = record["uuid"]
+                        # 记录断点进度文件路径（缓存在 DownloadProcess 目录下）
+                        record["resume_file"] = os.path.join(PROCESS_DIR, f"{filename}_download_progress.json")
+                        save_download_history()
                         # 立即刷新列表显示新记录
                         wx.CallAfter(refresh_download_list, list_ctrl, image_list)
-                        
+
+                        # 目标盘是 FAT 格式时不支持稀疏文件，回退到旧版下载引擎
+                        if is_fat_filesystem(save_path):
+                            wx.CallAfter(
+                                wx.MessageBox,
+                                "目标保存路径位于 FAT(含 exFAT) 文件系统，不支持稀疏文件，\n已切换到旧版下载引擎。",
+                                "提示", wx.OK | wx.ICON_INFORMATION
+                            )
+                            wx.CallAfter(
+                                download_window, url, filename, save_path,
+                                thread_count, True, on_download_completed
+                            )
+                            return
+
                         import NewDownloadCore
-                
+
                         wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename, 
                                     Jobs=thread_count, Cache=5, Size=chunk_size, 
                                     disable_ssl=True, completion_callback=on_download_completed)
@@ -1099,6 +1293,9 @@ def on_item_activated(list_ctrl, event):
         elif os.path.exists(file_path) and record["status"] == "已完成":
             if not open_file_or_folder(file_path):
                 wx.MessageBox("无法打开文件", "错误", wx.OK | wx.ICON_ERROR)
+        elif record.get("status", "") in ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断") and resolve_resume_file(record):
+            # 双击未完成且存在断点进度文件的记录 -> 恢复下载
+            resume_download_record(list_ctrl, record)
         else:
             wx.MessageBox("文件不存在或下载未完成", "提示", wx.OK | wx.ICON_INFORMATION)
 
@@ -1168,6 +1365,91 @@ def on_menu_open_folder(event, list_ctrl):
                 wx.MessageBox("无法打开文件夹", "错误", wx.OK | wx.ICON_ERROR)
         else:
             wx.MessageBox("文件不存在", "错误", wx.OK | wx.ICON_ERROR)
+def resume_download_record(list_ctrl, record):
+    """根据下载记录恢复未完成的下载。
+    需要缓存目录 DownloadProcess 下存在对应的断点进度文件。
+    """
+    resume_file = resolve_resume_file(record)
+    if not resume_file:
+        wx.MessageBox("未找到断点进度文件，无法恢复下载。", "提示", wx.OK | wx.ICON_INFORMATION)
+        return
+
+    save_path = record.get("save_path", "")
+    save_path = os.path.dirname(resume_file) if not save_path else save_path
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+
+    target_file = os.path.join(save_path, record.get("filename", ""))
+    if not os.path.exists(target_file):
+        wx.MessageBox(
+            f"未找到已下载的临时文件：{target_file}\n请确认文件未被移动或删除，否则无法继续分段下载。",
+            "恢复失败", wx.OK | wx.ICON_ERROR)
+        return
+
+    status = record.get("status", "")
+    record_uuid = record.get("uuid", "")
+
+    def on_resume_completed(success, file_size, uuid=None):
+        set_uuid = uuid if uuid else record_uuid
+        if success:
+            if set_uuid:
+                update_download_record_by_uuid(set_uuid, status="已完成", file_size=file_size)
+            # 完成后删除断点进度文件
+            if resume_file and os.path.exists(resume_file):
+                try:
+                    os.remove(resume_file)
+                except Exception:
+                    pass
+        else:
+            # 未能完成：磁盘上已有部分数据则标记为“部分完成”，否则为纯失败。
+            disk_size = 0
+            try:
+                disk_size = os.path.getsize(os.path.join(save_path, record.get("filename", "")))
+            except Exception:
+                disk_size = 0
+            if set_uuid:
+                if disk_size > 0 or _get_record_progress(record):
+                    update_download_record_by_uuid(set_uuid, status="部分完成", file_size=disk_size)
+                else:
+                    update_download_record_by_uuid(set_uuid, status="失败", file_size=file_size)
+        wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+
+    def _do_resume():
+        # ResumeDownload 会创建 wx.Frame 并进入 MainLoop，必须在主线程执行，
+        # 否则在后台线程创建 wx GUI 会导致段错误。与 on_new_download 中
+        # 用 wx.CallAfter 启动 NewDownloadCore.Download 的方式保持一致。
+        try:
+            import NewDownloadCore
+            NewDownloadCore.ResumeDownload(
+                ResumePath=resume_file,
+                SavePath=save_path,
+                InputPath=save_path,
+                uuid=record_uuid,
+                SpeedUnit="MB/s",
+                completion_callback=on_resume_completed,
+                Jobs=0,
+                Size=0,
+                Cache=0.0,
+            )
+        except Exception as e:
+            wx.CallAfter(wx.MessageBox, f"启动恢复下载失败：{str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+
+    if status == "下载中":
+        update_download_record_by_uuid(record_uuid, status="失败")
+        save_download_history()
+    # 必须在主线程执行（避免在后台线程创建 wx GUI 导致段错误）
+    wx.CallAfter(_do_resume)
+
+
+def on_menu_resume(event, list_ctrl):
+    """恢复下载（右键菜单）"""
+    selected = list_ctrl.GetFirstSelected()
+    if selected == -1 or selected >= len(download_history):
+        return
+    resume_download_record(list_ctrl, download_history[selected])
+
+
 def on_menu_redownload(event, list_ctrl):
     """重新下载"""
     selected = list_ctrl.GetFirstSelected()
@@ -1259,6 +1541,23 @@ def show_download_manager():
     frame.Show()
     
     app.MainLoop()
+
+def trigger_new_download(parent=None, prefill_url=None):
+    if parent is None:
+        app = wx.GetApp()
+        if app is not None:
+            parent = wx.GetActiveWindow()
+            if parent is None:
+                parent = app.GetTopWindow()
+    try:
+        lst = _download_list_ctrl
+        img = _image_list_ctrl
+    except NameError:
+        lst = None
+        img = None
+    if lst is None or img is None:
+        return
+    on_new_download(parent, lst, img, prefill_url=prefill_url)
 
 def DownloadUI(parent=None):
   
