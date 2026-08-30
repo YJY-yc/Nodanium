@@ -110,9 +110,9 @@ SizeButton = tuple(config['size_button'])
 windowPos = tuple(config['window_size'])
 
 try:
-    import Adminchaker
+    import Adminchecker
 except ImportError as e:
-    print(f"导入 Adminchaker 失败: {e}")
+    print(f"导入 Adminchecker 失败: {e}")
 
 try:
     import DNSShower
@@ -120,9 +120,9 @@ except ImportError as e:
     print(f"导入 DNSShower 失败: {e}")
 
 try:
-    import CommanDownload
+    import CommonDownload
 except ImportError as e:
-    print(f"导入 CommanDownload 失败: {e}")
+    print(f"导入 CommonDownload 失败: {e}")
 
 try:
     import NetworkTraffic
@@ -155,9 +155,9 @@ except ImportError as e:
     print(f"导入 LinkButton 失败: {e}")
 
 try:
-    import DatchDownload
+    import BatchDownload
 except ImportError as e:
-    print(f"导入 DatchDownload 失败: {e}")
+    print(f"导入 BatchDownload 失败: {e}")
 
 try:
     from Ping import *
@@ -295,7 +295,7 @@ def on_download_button(event):
     except Exception:
         pass
 
-    CommanDownload.download_file(url, dirs+filename, he)
+    CommonDownload.download_file(url, dirs+filename, he)
     print(f"URL: {url}, 文件名: {filename}")
     logging.debug(f"URL: {url}, 文件名: {filename}")
     frame.SetStatusText("")
@@ -408,13 +408,13 @@ def create_tray_icon(frame):
         print("正在创建托盘图标...")
         logging.info("正在创建托盘图标...")
  
-        icon_path = 'icons/Admin_icon.png' if Adminchaker.is_admin() else 'icons/Nodanium.png'
+        icon_path = 'icons/Admin_icon.png' if Adminchecker.is_admin() else 'icons/Nodanium.png'
         if not os.path.exists(icon_path):
             print(f"错误：图标文件不存在: {icon_path}")
             logging.error(f"错误：图标文件不存在: {icon_path}")
             return None
         
-        if Adminchaker.is_admin():
+        if Adminchecker.is_admin():
             icon = wx.Icon('icons/Admin_icon.png', wx.BITMAP_TYPE_PNG)
             print("管理员图标加载成功")
             tray = wx.adv.TaskBarIcon()
@@ -567,7 +567,7 @@ def Window(silence=False):
     icon = wx.Icon('icons/home.png', wx.BITMAP_TYPE_PNG)
 
     global frame 
-    if Adminchaker.is_admin(): 
+    if Adminchecker.is_admin(): 
         frame = wx.Frame(None, title="Nodanium(管理员)", size=windowPos) 
     else:
         frame = wx.Frame(None, title="Nodanium", size=windowPos)
@@ -606,7 +606,7 @@ def Window(silence=False):
     _nav_tree.Bind(wx.EVT_TREE_SEL_CHANGING, _on_tree_sel_changing)
 
 
-    _sidebar_state = {'active': False}
+    _sidebar_state = {'active': False, 'width': 160}
     SIDEBAR_MIN = 90
     SIDEBAR_MAX = 380
     _cursor_resize = wx.Cursor(wx.CURSOR_SIZEWE)
@@ -618,8 +618,8 @@ def Window(silence=False):
     def _apply_saved_width():
         saved_w = int(config.get('sidebar_width', 160) or 160)
         if saved_w >= SIDEBAR_MIN:
-            _nav_tree.SetMinSize((saved_w, 10))
-            _nav_tree.SetSize((saved_w, _nav_tree.GetSize().height))
+            _nav_tree.SetMinSize((saved_w, -1))
+            _sidebar_state['width'] = saved_w
             listbook.SendSizeEvent()
 
     def _position_resize_bar():
@@ -645,15 +645,12 @@ def Window(silence=False):
             event.Skip()
             return
         try:
-      
             mx = _resize_bar.ScreenToClient(wx.GetMousePosition()).x
             bar_x = _resize_bar.GetPosition().x
             new_w = max(SIDEBAR_MIN, min(SIDEBAR_MAX, bar_x + mx))
-            h = _nav_tree.GetSize().height
-            _nav_tree.SetSize((new_w, h))
-            _nav_tree.SetMinSize((new_w, 10))
+            _nav_tree.SetMinSize((new_w, -1))
+            _sidebar_state['width'] = new_w
             _position_resize_bar()
-   
             listbook.SendSizeEvent()
         except Exception as e:
             logging.error(f"调整左树宽度失败: {e}")
@@ -669,7 +666,7 @@ def Window(silence=False):
                 pass
            
             try:
-                new_w = _nav_tree.GetSize().width
+                new_w = _sidebar_state.get('width', _nav_tree.GetSize().width)
                 if new_w >= SIDEBAR_MIN:
                     config['sidebar_width'] = new_w
                     with open(config_path, 'w', encoding='utf-8') as f:

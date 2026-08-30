@@ -4,7 +4,7 @@
 import os
 import wx
 import time
-import Adminchaker
+import Adminchecker
 import sys
 import logging
 import tempfile
@@ -48,9 +48,9 @@ def print_help():
     --filename=<文件名>    保存文件名
     --path=<保存路径>      文件保存路径
     --job=<线程数>         下载线程数（默认16）
-    --size=<包大小(B)>        每个线程下载的包大小（默认1MB）
+    --size=<包大小(MB)>        每个线程下载的包大小（默认1MB）
     --header=<自定义头>    自定义HTTP头（默认空）
-    --cache=<缓存时间>     缓存时间（默认10MB）
+    --cache=<缓存MB>     缓存大小
     --run=<自动运行>       是否运行（默认None）
     注意: --download 模式下，--url 和 --filename 为必填参数
   --old_download              命令行下载模式(旧版)
@@ -512,7 +512,7 @@ print(target_folder)
 
 
 
-if Adminchaker.is_admin():
+if Adminchecker.is_admin():
     admin_title = "已获得管理员权限"
     admin_msg = "程序正在以管理员权限运行"
     if sys_type == "Windows":
