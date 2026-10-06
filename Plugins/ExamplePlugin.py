@@ -1,6 +1,8 @@
 
 import wx
-from winotify import Notification
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from Notifier import Notification
 def MainPanel(parent):
     """
     在传入的父面板中创建一个简单的界面，显示一行字

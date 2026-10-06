@@ -14,6 +14,16 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 progress_dialog = None
 
+def _safe_urlparse(url):
+    try:
+        return urlparse(url)
+    except ValueError:
+        fixed = (url or '').replace('[', '%5B').replace(']', '%5D')
+        try:
+            return urlparse(fixed)
+        except Exception:
+            return urlparse('')
+
 DOWNLOAD_EXTENSIONS = [
     '.zip', '.jar', '.exe', '.msi', '.dmg', '.pkg',
     '.deb', '.rpm', '.tar.gz', '.tgz', '.7z', '.rar',
@@ -37,6 +47,39 @@ FAST_DOWNLOAD_EXTENSIONS = (
 )
 
 active_filter_extensions = list(FAST_DOWNLOAD_EXTENSIONS)
+
+# 排除关键字（如 dev / pre / beta），命中的链接会被过滤
+active_exclude_keywords = []
+
+
+def parse_exclude_keywords(text):
+    words = []
+    for part in re.split(r'[,;\s\n]+', text or ''):
+        part = part.strip().lower()
+        if part and part not in words:
+            words.append(part)
+    return words
+
+
+def set_exclude_keywords(text):
+    global active_exclude_keywords
+    active_exclude_keywords = parse_exclude_keywords(text)
+    return active_exclude_keywords
+
+
+def get_exclude_keywords_text():
+    return ' '.join(active_exclude_keywords)
+
+
+def matches_exclude(url):
+    if not url or not active_exclude_keywords:
+        return False
+    target = url.lower()
+    for kw in active_exclude_keywords:
+        if kw in target:
+            return True
+    return False
+
 
 def parse_filter_extensions(text):
     exts = []
@@ -93,13 +136,13 @@ DOWNLOAD_CONTENT_DISPOSITION = ['attachment', 'inline']
 
 def get_filename_from_url(url):
     from urllib.parse import unquote
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
     path = parsed.path or url
     name = os.path.basename(path) or "download_file"
     return unquote(name)
 
 def is_real_download_file(url):
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
     path_lower = parsed.path.lower()
     query_lower = parsed.query.lower()
     for ext in DOWNLOAD_WEB_ASSETS:
@@ -120,7 +163,7 @@ def is_real_download_file(url):
 def is_fast_download_link(url):
     if not url:
         return False
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
     path = parsed.path
     if not path or path == '/':
         return False
@@ -133,18 +176,25 @@ def is_fast_download_link(url):
 def matches_filter(url):
     if not url:
         return False
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
     path = parsed.path
     if not path or path == '/':
         return False
     path_lower = path.lower()
+    combined = (parsed.path + '?' + parsed.query).lower() if parsed.query else path_lower
     for ext in active_filter_extensions:
-        if path_lower.endswith(ext):
+        if path_lower.endswith(ext) or combined.endswith(ext):
             return True
     return False
 
+
+def passes_filter(url):
+    """同时满足扩展名筛选且未被排除关键字命中时返回 True。"""
+    return matches_filter(url) and not matches_exclude(url)
+
+
 def is_download_link(url):
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
     path_lower = parsed.path.lower()
     for ext in DOWNLOAD_EXTENSIONS:
         if path_lower.endswith(ext):
@@ -185,7 +235,7 @@ def is_download_link(url):
 def to_absolute_url(href, base_url):
     if not href:
         return ""
-    parsed_base = urlparse(base_url)
+    parsed_base = _safe_urlparse(base_url)
     if href.startswith('//'):
         return parsed_base.scheme + ':' + href
     elif href.startswith('/'):
@@ -214,25 +264,29 @@ def _resolve_headers(headers, url=None):
             pass
     return base
 
-def analyze_webpage(url, headers=None, timeout=10):
-    global progress_dialog
-    print(timeout)
+def analyze_webpage(url, headers=None, timeout=10, progress_cb=None):
+    """抓取并解析网页。该函数为纯逻辑（不创建任何 wx 对话框），可在后台线程安全调用。
+    progress_cb(percent, message) 可选，用于向主线程回报进度。"""
+    def report(percent, message):
+        if progress_cb:
+            try:
+                progress_cb(percent, message)
+            except Exception:
+                pass
+
     try:
         start_time = time.time()
 
-        progress_dialog = wx.ProgressDialog("网页分析进度", "正在初始化...", maximum=100,
-                                          style=wx.PD_AUTO_HIDE )
-
         headers = _resolve_headers(headers, url)
 
-        progress_dialog.Update(10, "正在获取网页内容...")
+        report(10, "正在获取网页内容...")
         response = requests.get(url, headers=headers, data={}, verify=False, timeout=timeout)
 
-        progress_dialog.Update(30, "网页内容获取完成，正在解析...")
+        report(30, "网页内容获取完成，正在解析...")
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        progress_dialog.Update(50, "正在提取网页信息...")
+        report(50, "正在提取网页信息...")
 
         title = soup.title.string if soup.title else "无标题"
 
@@ -249,12 +303,10 @@ def analyze_webpage(url, headers=None, timeout=10):
 
         text = soup.get_text()
 
-        progress_dialog.Update(80, "网页信息提取完成")
+        report(80, "网页信息提取完成")
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-
-        progress_dialog.Update(99, "分析完成,等待结果...")
 
         return {
             'title': title,
@@ -265,11 +317,7 @@ def analyze_webpage(url, headers=None, timeout=10):
             'elapsed_time': elapsed_time
         }
     except requests.Timeout:
-        progress_dialog.Destroy()
-        wx.MessageBox(f"连接超时：{timeout}秒\n请适当增加超时时间后重试",
-                     "连接超时")
-
-        return {'error': f'连接超时'}
+        return {'error': f'连接超时：{timeout}秒，请适当增加超时时间后重试'}
     except Exception as e:
         return {'error': str(e)}
 
@@ -284,7 +332,7 @@ def get_total_pages(url, headers=None):
 
         for a in soup.find_all('a', href=True):
             href = a['href']
-            parsed_href = urlparse(href)
+            parsed_href = _safe_urlparse(href)
             qs = parse_qs(parsed_href.query)
             for key in ['page', 'p', 'Page', 'pg', 'offset', 'start']:
                 if key in qs:
@@ -317,7 +365,7 @@ def get_total_pages(url, headers=None):
         return 1
 
 def generate_page_urls(base_url, start_page, end_page):
-    parsed = urlparse(base_url)
+    parsed = _safe_urlparse(base_url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
 
     page_param = None
@@ -342,7 +390,7 @@ def generate_page_urls(base_url, start_page, end_page):
 def _check_content_type_downloadable(url, headers=None, timeout=8):
     try:
         headers = _resolve_headers(headers, url)
-        parsed = urlparse(url)
+        parsed = _safe_urlparse(url)
         head_url = parsed._replace(query=parsed.query).geturl()
         response = requests.head(head_url, headers=headers, verify=False, timeout=timeout, allow_redirects=True)
         content_type = response.headers.get('Content-Type', '').lower()
@@ -424,12 +472,23 @@ def _extract_all_urls_from_html(html_text, base_url):
     links = []
     seen = set()
 
+    def _is_sane_url(u):
+        if not u or not u.startswith(('http://', 'https://')):
+            return False
+        try:
+            urlparse(u)
+        except ValueError:
+            return False
+        return True
+
     def add(url_val, text=""):
         if not url_val:
             return
         resolved = url_val
         if url_val.startswith(('//', '/')) or (not url_val.startswith(('http:', 'https:')) and not url_val.startswith('data:')):
             resolved = to_absolute_url(url_val, base_url)
+        if not _is_sane_url(resolved):
+            return
         if resolved and resolved not in seen:
             seen.add(resolved)
             links.append({"url": resolved, "text": text})
@@ -787,7 +846,7 @@ def crawl_page_for_download_links(url, headers=None):
 
 def _crawl_nuxt_api(url, headers, download_links, seen, html=None):
     try:
-        parsed = urlparse(url)
+        parsed = _safe_urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
 
         if html is None:
@@ -1096,7 +1155,7 @@ def _crawl_spa_with_playwright(url, headers, download_links, seen):
 
 def _discover_and_crawl_api_endpoints(url, headers, download_links, seen):
     try:
-        parsed = urlparse(url)
+        parsed = _safe_urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
 
         api_paths = [
@@ -1141,7 +1200,7 @@ def _discover_and_crawl_api_endpoints(url, headers, download_links, seen):
 
 def _crawl_spa_api_direct(url, headers, download_links, seen):
     try:
-        parsed = urlparse(url)
+        parsed = _safe_urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
 
         api_urls = _discover_api_endpoints_from_page(url, headers, base)
@@ -1341,17 +1400,62 @@ def _extract_downloads_from_json_deep(data, base, download_links, seen, depth=0)
                     })
 
 def on_analyze_button(url_l, headers=None, timeout=5, code=True):
-    global progress_dialog
-    print(url_l)
-    print(code)
-
-    result = analyze_webpage(url_l, headers=headers, timeout=timeout)
-
-    if 'error' in result:
-        wx.MessageBox(f"分析失败: {result['error']}", "错误", wx.OK | wx.ICON_ERROR)
+    url_l = (url_l or '').strip()
+    if not url_l:
+        wx.MessageBox("请输入要分析的网址", "提示", wx.OK | wx.ICON_INFORMATION)
         return
+    if not url_l.startswith(('http://', 'https://')):
+        url_l = 'https://' + url_l
 
-    result_window = wx.Frame(None, title="网页分析结果", size=(800, 600))
+    parent = wx.GetActiveWindow()
+    progress = wx.ProgressDialog(
+        "网页分析进度", "正在初始化...", maximum=100, parent=parent,
+        style=wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME |
+              wx.PD_REMAINING_TIME | wx.PD_AUTO_HIDE)
+
+    state = {'cancelled': False, 'done': False}
+
+    def report(percent, message):
+        def _update():
+            if state['done'] or state['cancelled']:
+                return
+            try:
+                cont, _skip = progress.Update(percent, message)
+                if not cont:
+                    state['cancelled'] = True
+            except Exception:
+                state['cancelled'] = True
+        wx.CallAfter(_update)
+
+    def finish(result):
+        state['done'] = True
+        try:
+            progress.Destroy()
+        except Exception:
+            pass
+        if state['cancelled']:
+            return
+        if not result or 'error' in result:
+            err = (result or {}).get('error', '未知错误')
+            wx.MessageBox(f"分析失败: {err}", "错误", wx.OK | wx.ICON_ERROR)
+            return
+        try:
+            _show_analyze_result(result, url_l, headers, code)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            wx.MessageBox(f"展示分析结果失败: {e}", "错误", wx.OK | wx.ICON_ERROR)
+
+    def worker():
+        result = analyze_webpage(url_l, headers=headers, timeout=timeout, progress_cb=report)
+        wx.CallAfter(lambda: finish(result))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _show_analyze_result(result, url_l, headers, code):
+    result_window = wx.Frame(None, title="网页分析结果", size=(980, 640))
+    result_window.SetMinSize((760, 480))
     notebook = wx.Notebook(result_window)
 
     info_panel = wx.Panel(notebook)
@@ -1386,11 +1490,11 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
     page_ctrl_sizer.Add(page_mode_combo, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     from_label = wx.StaticText(links_panel, label="从:")
     page_ctrl_sizer.Add(from_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-    from_spin = wx.SpinCtrl(links_panel, min=1, max=9999, initial=1, size=(80, -1))
+    from_spin = wx.SpinCtrl(links_panel, min=1, max=9999, initial=1, size=(90, 28))
     page_ctrl_sizer.Add(from_spin, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     to_label = wx.StaticText(links_panel, label="到:")
     page_ctrl_sizer.Add(to_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-    to_spin = wx.SpinCtrl(links_panel, min=1, max=9999, initial=1, size=(80, -1))
+    to_spin = wx.SpinCtrl(links_panel, min=1, max=9999, initial=1, size=(90, 28))
     page_ctrl_sizer.Add(to_spin, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
     detect_btn = wx.Button(links_panel, label="检测页数")
     page_ctrl_sizer.Add(detect_btn, 0, wx.ALL, 5)
@@ -1407,6 +1511,8 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
     filter_sizer.Add(apply_filter_btn, 0, wx.ALL, 5)
     reset_filter_btn = wx.Button(links_panel, label="重置默认")
     filter_sizer.Add(reset_filter_btn, 0, wx.ALL, 5)
+    exclude_btn = wx.Button(links_panel, label="排除...")
+    filter_sizer.Add(exclude_btn, 0, wx.ALL, 5)
     links_panel_sizer.Add(filter_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
     link_list_ctrl = wx.ListCtrl(links_panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
@@ -1433,6 +1539,8 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
     page_counter = [1]
 
     def add_link_item(url, page_num=1):
+        if matches_exclude(url):
+            return False
         idx = link_list_ctrl.GetItemCount()
         filename = get_filename_from_url(url)
         item = link_list_ctrl.InsertItem(idx, "✓")
@@ -1445,12 +1553,13 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
             "selected": True,
             "page": page_num
         })
+        return True
 
     def populate_from_result_links():
         existing = {item["url"] for item in link_items}
         count = 0
         for link_url in result.get('links', []):
-            if link_url not in existing and matches_filter(link_url):
+            if link_url not in existing and is_download_link(link_url) and is_real_download_file(link_url):
                 add_link_item(link_url, 1)
                 count += 1
                 existing.add(link_url)
@@ -1460,7 +1569,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
             found = crawl_page_for_download_links(url_l, headers=headers)
             new_count = 0
             for link in found:
-                if link["url"] not in existing and matches_filter(link["url"]):
+                if link["url"] not in existing:
                     wx.CallAfter(lambda u=link["url"]: add_link_item(u, 1))
                     existing.add(link["url"])
                     new_count += 1
@@ -1501,7 +1610,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         for i in range(link_list_ctrl.GetItemCount()):
             url = link_list_ctrl.GetItemText(i, 2)
             page = link_list_ctrl.GetItemText(i, 3)
-            if matches_filter(url):
+            if passes_filter(url):
                 kept.append((url, page))
             else:
                 removed += 1
@@ -1512,7 +1621,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         total = len(active_filter_extensions)
         wx.MessageBox(f"筛选规则已更新（共 {total} 个扩展名），已移除 {removed} 个不匹配链接",
                       "筛选已应用", wx.OK | wx.ICON_INFORMATION)
-        result_window.SetStatusText(f"当前筛选: {get_filter_extensions_text()}")
+        result_window.SetStatusText(f"当前筛选: {get_filter_extensions_text()}；排除: {get_exclude_keywords_text() or '无'}")
 
     def on_reset_filter(event):
         global active_filter_extensions
@@ -1522,13 +1631,80 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         for i in range(link_list_ctrl.GetItemCount()):
             url = link_list_ctrl.GetItemText(i, 2)
             page = link_list_ctrl.GetItemText(i, 3)
-            if matches_filter(url):
+            if passes_filter(url):
                 kept.append((url, page))
         link_list_ctrl.DeleteAllItems()
         link_items.clear()
         for url, page in kept:
             add_link_item(url, int(page) if page.isdigit() else 1)
         result_window.SetStatusText(f"已重置为默认筛选: {get_filter_extensions_text()}")
+
+    def refresh_link_list():
+        kept = []
+        for i in range(link_list_ctrl.GetItemCount()):
+            url = link_list_ctrl.GetItemText(i, 2)
+            page = link_list_ctrl.GetItemText(i, 3)
+            selected = link_list_ctrl.GetItemText(i, 0) == "✓"
+            if passes_filter(url):
+                kept.append((url, page, selected))
+        link_list_ctrl.DeleteAllItems()
+        link_items.clear()
+        for url, page, selected in kept:
+            add_link_item(url, int(page) if page.isdigit() else 1)
+            if not selected and link_items:
+                link_items[-1]["selected"] = False
+                link_list_ctrl.SetItem(link_list_ctrl.GetItemCount() - 1, 0, " ")
+        return len(kept)
+
+    def on_set_exclude(event):
+        dlg = wx.Dialog(result_window, title="设置排除字段", size=(460, 200))
+        panel = wx.Panel(dlg)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        tip = wx.StaticText(panel, label="排除字段（逗号/空格分隔，如 dev pre beta）:\nURL 中包含任一字段的链接将被移除。")
+        sizer.Add(tip, 0, wx.ALL | wx.EXPAND, 8)
+        exclude_text = wx.TextCtrl(panel, value=get_exclude_keywords_text(), style=wx.TE_PROCESS_ENTER)
+        sizer.Add(exclude_text, 0, wx.ALL | wx.EXPAND, 8)
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        ok_btn = wx.Button(panel, wx.ID_OK, label="应用排除")
+        clear_btn = wx.Button(panel, label="清空排除")
+        cancel_btn = wx.Button(panel, wx.ID_CANCEL, label="取消")
+        btn_sizer.AddStretchSpacer(1)
+        btn_sizer.Add(ok_btn, 0, wx.ALL, 5)
+        btn_sizer.Add(clear_btn, 0, wx.ALL, 5)
+        btn_sizer.Add(cancel_btn, 0, wx.ALL, 5)
+        sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        panel.SetSizer(sizer)
+        # 对话框自身需有 sizer，否则子控件在 GTK 下可能被分配到 4px 空间
+        _dlg_sizer = wx.BoxSizer(wx.VERTICAL)
+        _dlg_sizer.Add(panel, 1, wx.EXPAND)
+        dlg.SetSizer(_dlg_sizer)
+        dlg.Layout()
+
+        result = {'clear': False}
+
+        def on_clear(e):
+            result['clear'] = True
+            dlg.EndModal(wx.ID_OK)
+
+        clear_btn.Bind(wx.EVT_BUTTON, on_clear)
+        exclude_text.Bind(wx.EVT_TEXT_ENTER, lambda e: dlg.EndModal(wx.ID_OK))
+
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+        finally:
+            dlg.Destroy()
+
+        if result['clear']:
+            set_exclude_keywords("")
+            status = "已清空排除字段"
+        else:
+            set_exclude_keywords(exclude_text.GetValue())
+            status = f"当前排除字段: {get_exclude_keywords_text() or '无'}"
+        kept = refresh_link_list()
+        result_window.SetStatusText(f"{status}，列表剩余 {kept} 条")
+        wx.MessageBox(f"排除已应用\n{status}\n列表剩余 {kept} 条链接",
+                      "排除已应用", wx.OK | wx.ICON_INFORMATION)
 
     def on_detect_page(event):
         detect_btn.Enable(False)
@@ -1563,30 +1739,63 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         page_urls = generate_page_urls(url_l, start_page, end_page)
         progress = wx.ProgressDialog("爬取下载链接",
                                      f"正在分析第 {start_page}-{end_page} 页...",
-                                     maximum=len(page_urls),
-                                     style=wx.PD_AUTO_HIDE | wx.PD_APP_MODAL)
+                                     maximum=max(len(page_urls), 1),
+                                     parent=result_window,
+                                     style=wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
 
         total_found = [0]
         new_count = [0]
+        crawl_state = {'done': False, 'cancelled': False}
+
+        def _destroy_crawl_progress():
+            if crawl_state['done']:
+                return
+            crawl_state['done'] = True
+            try:
+                progress.Destroy()
+            except Exception:
+                pass
+            try:
+                crawl_btn.Enable(True)
+            except Exception:
+                pass
+
+        def _crawl_update(idx):
+            if crawl_state['done'] or crawl_state['cancelled']:
+                return
+            try:
+                cont, _skip = progress.Update(idx + 1, f"正在爬取第 {start_page + idx}/{end_page} 页...")
+                if not cont:
+                    crawl_state['cancelled'] = True
+            except Exception:
+                crawl_state['cancelled'] = True
 
         def do_crawl():
-            existing_urls = {item["url"] for item in link_items}
-            for i, page_url in enumerate(page_urls):
-                found = crawl_page_for_download_links(page_url, headers=headers)
-                page_num = start_page + i
-                for link in found:
-                    if link["url"] not in existing_urls and matches_filter(link["url"]):
-                        wx.CallAfter(lambda u=link["url"], p=page_num: add_link_item(u, p))
-                        existing_urls.add(link["url"])
-                        total_found[0] += 1
-                        new_count[0] += 1
-                wx.CallAfter(lambda idx=i: progress.Update(idx + 1, f"正在爬取第 {start_page + idx}/{end_page} 页..."))
-
-            wx.CallAfter(lambda: progress.Update(len(page_urls), f"完成，共发现 {total_found[0]} 个下载链接"))
-            wx.CallAfter(lambda: result_window.SetStatusText(f"爬取完成，新增 {new_count[0]} 个下载链接"))
-            wx.CallAfter(lambda: crawl_btn.Enable(True))
-            wx.CallAfter(lambda: wx.MessageBox(f"爬取完成，共发现 {total_found[0]} 个下载链接", "爬取完成", wx.OK | wx.ICON_INFORMATION))
-            wx.CallAfter(lambda: progress.Destroy)
+            try:
+                existing_urls = {item["url"] for item in link_items}
+                for i, page_url in enumerate(page_urls):
+                    if crawl_state['cancelled']:
+                        break
+                    found = crawl_page_for_download_links(page_url, headers=headers)
+                    page_num = start_page + i
+                    for link in found:
+                        if link["url"] not in existing_urls:
+                            wx.CallAfter(lambda u=link["url"], p=page_num: add_link_item(u, p))
+                            existing_urls.add(link["url"])
+                            total_found[0] += 1
+                            new_count[0] += 1
+                    wx.CallAfter(_crawl_update, i)
+            except Exception:
+                pass
+            finally:
+                def _finish():
+                    _destroy_crawl_progress()
+                    if crawl_state['cancelled']:
+                        result_window.SetStatusText(f"爬取已取消，新增 {new_count[0]} 个下载链接")
+                        return
+                    result_window.SetStatusText(f"爬取完成，新增 {new_count[0]} 个下载链接")
+                    wx.MessageBox(f"爬取完成，共发现 {total_found[0]} 个下载链接", "爬取完成", wx.OK | wx.ICON_INFORMATION)
+                wx.CallAfter(_finish)
 
         threading.Thread(target=do_crawl, daemon=True).start()
 
@@ -1643,6 +1852,11 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
         dlg_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         dlg_panel.SetSizer(dlg_sizer)
+        # 对话框自身需有 sizer，否则子控件在 GTK 下可能被分配到 4px 空间
+        _dlg_outer = wx.BoxSizer(wx.VERTICAL)
+        _dlg_outer.Add(dlg_panel, 1, wx.EXPAND)
+        dlg.SetSizer(_dlg_outer)
+        dlg.Layout()
 
         if dlg.ShowModal() == wx.ID_OK:
             fn = folder_text.GetValue().strip()
@@ -1687,6 +1901,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
     batch_download_btn.Bind(wx.EVT_BUTTON, on_batch_download)
     apply_filter_btn.Bind(wx.EVT_BUTTON, on_apply_filter)
     reset_filter_btn.Bind(wx.EVT_BUTTON, on_reset_filter)
+    exclude_btn.Bind(wx.EVT_BUTTON, on_set_exclude)
     filter_text.Bind(wx.EVT_TEXT_ENTER, on_apply_filter)
 
     populate_from_result_links()
@@ -1715,5 +1930,7 @@ def on_analyze_button(url_l, headers=None, timeout=5, code=True):
     result_window.CreateStatusBar()
     result_window.SetStatusText("就绪")
 
+    result_window.Layout()
     result_window.Show()
-    progress_dialog.Destroy()
+    result_window.Raise()
+    result_window.SetFocus()

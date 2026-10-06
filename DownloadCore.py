@@ -298,7 +298,7 @@ class DownloadFrame(wx.Frame):
                     self.url = final_url 
             response = requests.head(self.url, headers=self.headers, timeout=self.timeout, verify=not self.disable_ssl)
             self.file_size = int(response.headers.get('content-length', 0))
-            self.update_status(f"文件大小: {self.file_size} 字节,合{self.file_size / 1024 / 1024}MB")
+            self.update_status(f"文件大小: {self.file_size} 字节,约{self.file_size / 1024 / 1024}MB")
             
             self.temp_dir = os.path.join(self.save_path, "temp")
             os.makedirs(self.temp_dir, exist_ok=True)
@@ -343,6 +343,16 @@ class DownloadFrame(wx.Frame):
                                 outfile.write(infile.read())
                             self.safe_remove_file(chunk_file)
                 
+
+                if self.temp_dir and os.path.exists(self.temp_dir):
+                    for file in os.listdir(self.temp_dir):
+                        self.safe_remove_file(os.path.join(self.temp_dir, file))
+                    try:
+                        if not os.listdir(self.temp_dir):
+                            os.rmdir(self.temp_dir)
+                    except Exception:
+                        pass
+
                 downloaded_size = os.path.getsize(os.path.join(self.save_path, self.filename))
                 if downloaded_size == self.file_size:
                     self.update_status("下载结束")
@@ -407,7 +417,7 @@ class DownloadApp(wx.App):
 def download_window(url, filename, save_path, thread_count=4, disable_ssl=False, completion_callback=None):
     app = DownloadApp()
     if thread_count > 16:
-        wx.MessageBox("线程数超过16可能造成卡顿，请勿用大于文件大小的线程下载小文件", "警告", wx.OK)
+        wx.MessageBox("线程数超过16可能造成卡顿", "警告", wx.OK)
         
     frame = DownloadFrame(url, filename, save_path, thread_count, disable_ssl, completion_callback)
     app.SetTopWindow(frame)

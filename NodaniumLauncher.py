@@ -207,13 +207,23 @@ def _show_resume_dialog(ndf_path, parsed_args):
 
     def on_start(event):
         save_path = txt_path.GetValue().strip()
-        job_val = int(txt_job.GetValue().strip() or "0")
-        cache_val = float(txt_cache.GetValue().strip() or "0")
+        try:
+            job_val = int(txt_job.GetValue().strip() or "0")
+        except Exception:
+            job_val = 0
+        try:
+            cache_val = float(txt_cache.GetValue().strip() or "0")
+        except Exception:
+            cache_val = 0.0
         header_str = txt_header.GetValue().strip()
 
         if not save_path:
             wx.MessageBox("保存路径不能为空", "错误", wx.OK | wx.ICON_ERROR)
             return
+        if job_val < 0:
+            job_val = 0
+        if cache_val < 0:
+            cache_val = 0.0
 
         headers = {}
         if header_str:
@@ -268,17 +278,49 @@ def parse_args(args):
         if arg.startswith('--'):
             if '=' in arg:
                 key, value = arg.split('=', 1)
-                parsed[key[2:]] = value
+                parsed[key[2:]] = _strip_quotes(value)
             else:
-                parsed[arg[2:]] = True
+                key = arg[2:]
+             
+                if i + 1 < len(args) and not args[i + 1].startswith('-'):
+                    parsed[key] = _strip_quotes(args[i + 1])
+                    i += 1
+                else:
+                    parsed[key] = True
         elif arg.startswith('-') and len(arg) > 1:
             if i + 1 < len(args) and not args[i + 1].startswith('-'):
-                parsed[arg[1:]] = args[i + 1]
+                parsed[arg[1:]] = _strip_quotes(args[i + 1])
                 i += 1
             else:
                 parsed[arg[1:]] = True
         i += 1
     return parsed
+
+
+def _strip_quotes(value):
+    if isinstance(value, str) and len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _show_torrent_window(source, save_path="", ask=True):
+    """独立启动 BT 下载窗口（不拉起主窗口）。
+
+    仿照 .ndf 恢复下载的做法，仅弹出一个下载进度窗口。
+    ask=True 时先弹出保存位置/做种参数确认框。
+    返回进程退出码（0 成功，1 失败，2 用户取消）。
+    """
+    try:
+        import wx
+        app = wx.GetApp()
+        if app is None:
+            app = wx.App(False)
+        import BtorrentWindow
+        return BtorrentWindow.run_standalone(source, save_path, ask=ask)
+    except Exception as e:
+        logging.warning(f"BT 下载窗口启动失败: {e}")
+        print(f"BT 下载窗口启动失败: {e}")
+        return 1
 
 if len(sys.argv) > 1:
     args = sys.argv[1:]
@@ -287,16 +329,31 @@ if len(sys.argv) > 1:
     
     positional_files = [a for a in args if not a.startswith('-')]
     ndf_file_arg = None
+    torrent_file_arg = None
     for pf in positional_files:
         if pf.lower().endswith('.ndf') or pf.lower().endswith('.json'):
             ndf_file_arg = pf
             break
-    
+    for pf in positional_files:
+        if pf.lower().endswith('.torrent'):
+            torrent_file_arg = pf
+            break
+
     if ndf_file_arg and "r" not in parsed_args and "resume" not in parsed_args:
-        parsed_args["resume"] = ndf_file_arg    
+        parsed_args["resume"] = ndf_file_arg
+    if torrent_file_arg and "torrent" not in parsed_args:
+        parsed_args["torrent"] = torrent_file_arg
+
+    open_target = parsed_args.get("open")
+    if open_target and open_target is not True:
+        low = str(open_target).lower()
+        if low.endswith('.torrent'):
+            parsed_args["torrent"] = open_target
+        elif low.endswith('.ndf') or low.endswith('.json'):
+            parsed_args.setdefault("resume", open_target)
     
     if "v" in parsed_args or "version" in parsed_args:
-        print("Nodanium version 3.6.1.1\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
+        print("Nodanium version 4.0.1.0\nCopyright (c) 2023-2026 YUJY(YJY-yc)")
         sys.exit(0)
     elif "h" in parsed_args or "help" in parsed_args:
         print_help()
@@ -349,6 +406,18 @@ if len(sys.argv) > 1:
             sys.exit(1)
         success = _show_resume_dialog(resume_path, parsed_args)
         sys.exit(0 if success else 1)
+    elif "torrent" in parsed_args:
+        _torrent_source = parsed_args.get("torrent")
+        if not _torrent_source or _torrent_source is True:
+            print("错误: --torrent 需要指定 .torrent 文件或磁力链接")
+            sys.exit(1)
+        _torrent_source = str(_torrent_source)
+        if os.path.isfile(_torrent_source):
+            _torrent_source = os.path.abspath(_torrent_source)
+        _save_path = parsed_args.get("path") or ""
+        _ask = not (parsed_args.get("no-ask") or parsed_args.get("no_ask"))
+        rc = _show_torrent_window(_torrent_source, _save_path, ask=_ask)
+        sys.exit(rc)
     elif "download" in parsed_args:
         import NewDownloadCore
         import uuid
@@ -434,58 +503,99 @@ else:
 
 target_folder = ""
 
-if sys_type == "Windows":
-    from winotify import Notification
-    roaming_path = os.getenv('APPDATA') + ''
-    target_folder = os.path.join(roaming_path, "Nodanium")
-    print("当前是 Windows 系统")
-elif sys_type == "Linux":
-    print("当前是 Linux 系统")
-  
-    home_path = os.path.expanduser("~")
-    target_folder = os.path.join(home_path, ".Nodanium")
-
-
-
 try:
-    if not os.path.exists(target_folder):
-        os.makedirs(target_folder)
-    logs_folder = os.path.join(target_folder, "logs")
-    if not os.path.exists(logs_folder):
-        os.makedirs(logs_folder)
-except Exception as e:
-    app = wx.App(False)
-    wx.MessageBox(f"无法创建日志目录: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
-    sys.exit(1)
-def show_notification(title, message):
     if sys_type == "Windows":
-        toast = Notification(app_id="Nodanium",
-                            title=title,
-                            msg=message)
-        toast.show()
+        roaming_path = os.getenv('APPDATA') or tempfile.gettempdir()
+        target_folder = os.path.join(roaming_path, "Nodanium")
+        print("当前是 Windows 系统")
     elif sys_type == "Linux":
-        try:
-            import subprocess
-            subprocess.run(["notify-send", title, message], check=True)
-        except Exception as e:
-            logging.warning(f"发送通知失败: {str(e)}")
+        print("当前是 Linux 系统")
+        home_path = os.path.expanduser("~")
+        target_folder = os.path.join(home_path, ".Nodanium")
+    else:
+        target_folder = os.path.join(os.path.expanduser("~"), ".Nodanium")
+except Exception as e:
+    print(f"确定数据目录失败: {e}")
+    target_folder = os.path.join(tempfile.gettempdir(), "Nodanium")
+
+
+def _ensure_dir(path):
+    """创建目录；失败时返回 False，不弹窗、不退出。"""
+    try:
+        if path and not os.path.exists(path):
+            os.makedirs(path)
+        return os.path.isdir(path)
+    except Exception as e:
+        print(f"创建目录失败: {path} - {e}")
+        return False
+
+
+if not _ensure_dir(target_folder):
+    fallback = os.path.join(tempfile.gettempdir(), "Nodanium")
+    print(f"回退到临时数据目录: {fallback}")
+    target_folder = fallback
+    _ensure_dir(target_folder)
+
+logs_folder = os.path.join(target_folder, "logs")
+if not _ensure_dir(logs_folder):
+    logs_folder = tempfile.gettempdir()
+
+
+def show_notification(title, message):
+    try:
+        from Notifier import show_notification as _notify
+        _notify(title, message)
+    except Exception as e:
+        logging.warning(f"发送通知失败: {str(e)}")
 
 
 timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
-logging.basicConfig(
-    filename=os.path.join(target_folder, "logs", f'{timestamp}.log'),
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='w'
-)
+try:
+    logging.basicConfig(
+        filename=os.path.join(logs_folder, f'{timestamp}.log'),
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        filemode='w'
+    )
+except Exception as e:
+    print(f"初始化日志失败: {e}")
+    logging.basicConfig(level=logging.INFO)
 
 
-if not os.path.exists(target_folder):
-    os.makedirs(target_folder)
-    logs_folder = os.path.join(target_folder, "logs")
-    if not os.path.exists(logs_folder):
-        os.makedirs(logs_folder)
-        show_notification("初始化完成\n请在首选项中设置请求头", f"数据目录已创建：{target_folder}")
+
+def _install_crash_hooks():
+    import threading as _th
+    import traceback as _tb
+    crash_path = os.path.join(logs_folder, f'{timestamp}.crash.log')
+    try:
+        import faulthandler as _fh
+        _fh.enable(open(crash_path, "a", encoding="utf-8", errors="ignore"), all_threads=True)
+        logging.info("faulthandler 已启用: " + crash_path)
+    except Exception as _e:
+        logging.warning(f"faulthandler 启用失败: {_e}")
+
+    def _log_exc(exc_type, exc_value, exc_tb):
+        try:
+            text = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+            with open(crash_path, "a", encoding="utf-8", errors="ignore") as f:
+                f.write("\n===== 未处理异常 =====\n" + text)
+            logging.error("未处理异常:\n" + text)
+        except Exception:
+            pass
+
+    sys.excepthook = _log_exc
+    try:
+        def _thread_exc(args):
+            _log_exc(args.exc_type, args.exc_value, args.exc_traceback)
+        _th.excepthook = _thread_exc
+    except Exception:
+        pass
+
+
+try:
+    _install_crash_hooks()
+except Exception as _e:
+    logging.warning(f"安装崩溃钩子失败: {_e}")
 
 
 dir_file = os.path.join(target_folder, "dir.txt")
@@ -502,8 +612,7 @@ if not os.path.exists(dir_file):
         logging.warning(f"创建目录配置失败: {str(e)}")
 
 
-# 站点式请求头配置由 SiteHeaders 模块（site_headers.json）统一管理，
-# 不再使用旧的全局 Head.ANT 文本机制。
+
 logging.info('数据目录已创建')
 print(target_folder)
 
@@ -514,15 +623,10 @@ print(target_folder)
 if Adminchecker.is_admin():
     admin_title = "已获得管理员权限"
     admin_msg = "程序正在以管理员权限运行"
-    if sys_type == "Windows":
-        toast = Notification(
-            app_id="Advanced Network Toolset",
-            title=admin_title,
-            msg=admin_msg
-        )
-        toast.show()
-    elif sys_type == "Linux":
+    try:
         show_notification(admin_title, admin_msg)
+    except Exception as _e:
+        logging.warning(f"管理员通知失败: {_e}")
     logging.info('已获得管理员权限')
 
 def get_lockfile_path():
@@ -561,8 +665,8 @@ def check_existing_instance(lockfile):
         return False, None, None
 
 def show_instance_warning(lockfile, pid, process):
-    app = wx.App(False)
-    dialog = wx.Dialog(None, title="程序已运行", size=(750, 300))
+    _ensure_app()
+    dialog = wx.Dialog(None, title="程序已运行", size=(750, 400))
     logging.info('检测到程序已在运行中')
     info = (
         f"检测到程序已在运行中！你可以通过检查托盘的方式找到该实例。\n\n进程ID: {pid}\n运行路径: {process.exe()}\n启动时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(process.create_time()))}"
@@ -588,6 +692,11 @@ def show_instance_warning(lockfile, pid, process):
     vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=15)
     vbox.Add(message, flag=wx.ALL | wx.EXPAND, border=15)
     panel.SetSizer(vbox)
+
+    _dlg_sizer = wx.BoxSizer(wx.VERTICAL)
+    _dlg_sizer.Add(panel, 1, wx.EXPAND)
+    dialog.SetSizer(_dlg_sizer)
+    dialog.Layout()
  
     def on_kill(event):
         try:
@@ -627,37 +736,69 @@ def cleanup_lock(lockfile):
 lockfile = get_lockfile_path()
 
 
+_wx_app_singleton = None
+
+
+def _ensure_app():
+    """返回全局唯一的 wx.App（若未创建则创建）。
+
+    注意：必须把创建的 App 保存到模块级变量，否则局部变量被回收后
+    wx 内部失去 App，后续创建窗口时报 “The wx.App object must be created first!”。
+    """
+    global _wx_app_singleton
+    try:
+        app = wx.GetApp()
+        if app is not None:
+            _wx_app_singleton = app
+            return app
+    except Exception:
+        pass
+    if _wx_app_singleton is not None:
+        return _wx_app_singleton
+    try:
+        _wx_app_singleton = wx.App(False)
+        return _wx_app_singleton
+    except Exception as e:
+        logging.warning(f"创建 wx.App 失败: {e}")
+        return None
+
+
 acquired, error = acquire_lock(lockfile)
 if not acquired:
 
-    is_running, pid, process = check_existing_instance(lockfile)
+    try:
+        is_running, pid, process = check_existing_instance(lockfile)
+    except Exception:
+        is_running, pid, process = False, None, None
+
     if is_running:
-   
-        choice = show_instance_warning(lockfile, pid, process)
-        if choice == wx.ID_YES: 
+        _ensure_app()
+        try:
+            choice = show_instance_warning(lockfile, pid, process)
+        except Exception as e:
+            logging.warning(f"单实例提示窗口失败: {e}")
+            choice = wx.ID_IGNORE
+        if choice == wx.ID_YES:
             acquired, error = acquire_lock(lockfile)
             if not acquired:
-                wx.MessageBox("无法获取锁，请重试", "错误", wx.OK | wx.ICON_ERROR)
-                sys.exit(1)
-        elif choice == wx.ID_IGNORE:  
-            pass  
-        else:  
+                logging.warning(f"无法获取锁，继续运行: {error}")
+        elif choice == wx.ID_IGNORE:
+            pass
+        else:
             sys.exit(0)
     else:
-   
         try:
             os.remove(lockfile)
             acquired, error = acquire_lock(lockfile)
             if not acquired:
-                wx.MessageBox(f"无法获取锁: {error}", "错误", wx.OK | wx.ICON_ERROR)
-                sys.exit(1)
+                logging.warning(f"无法获取锁，继续运行: {error}")
         except Exception as e:
-            pass
+            logging.warning(f"清理残留锁文件失败: {e}")
 
 
 def _get_data_folder():
-    r"""返回当前系统的数据目录（Windows 仅 APPDATA\Nodanium）"""
-    # 注意: 使用 r 前缀避免 \N 被解析为 unicode 转义
+   
+
     if sys_type == "Windows":
         return os.path.join(os.getenv('APPDATA', ''), "Nodanium")
     elif sys_type == "Linux":
@@ -665,7 +806,7 @@ def _get_data_folder():
     return os.path.join(os.path.expanduser("~"), ".Nodanium")
 
 
-# 程序所需的主要第三方依赖（用于依赖缺失检查）
+
 _REQUIRED_DEPS = {
     "wx": "wxPython",
     "psutil": "psutil",
@@ -673,7 +814,6 @@ _REQUIRED_DEPS = {
     "PIL": "Pillow",
     "bs4": "beautifulsoup4",
     "dns": "dnspython",
-    "winotify": "winotify(仅Windows需要)",
 }
 
 
@@ -687,7 +827,7 @@ def _clear_caches():
     failed = 0
     import shutil
 
-    # 删除整个数据目录（连同锁文件/config/历史/缓存）
+  
     try:
         if os.path.isdir(data_dir):
             shutil.rmtree(data_dir, ignore_errors=False)
@@ -696,7 +836,7 @@ def _clear_caches():
         failed += 1
         logging.warning(f"清除数据目录失败: {data_dir} - {e}")
 
-    # 删除锁文件（位于系统临时目录）
+
     try:
         lock = get_lockfile_path()
         if os.path.exists(lock):
@@ -706,7 +846,7 @@ def _clear_caches():
         failed += 1
         logging.warning(f"清除锁文件失败: {e}")
 
-    # 删除程序目录内的编译缓存 __pycache__
+
     try:
         program_dir_now = os.path.dirname(os.path.abspath(__file__))
         removed_pyc = 0
@@ -737,9 +877,7 @@ def _check_dependencies():
             importlib.import_module(mod)
         except ImportError:
             missing.append(label)
-    # Windows 专属依赖仅在 Windows 上检查
-    if sys_type != "Windows":
-        missing = [m for m in missing if "winotify" not in m]
+
     return missing
 
 
@@ -844,6 +982,14 @@ def _try_relaunch():
 
 try:
     logging.info('启动窗口模块')
+
+    try:
+        import DownloadCleanup
+        _stat = DownloadCleanup.cleanup_stale_progress_files()
+        if _stat[0]:
+            logging.info(f'清理过期断点文件 {_stat[0]} 个')
+    except Exception as _ce:
+        logging.warning(f'启动清理断点文件失败: {_ce}')
     import Window
     Window.Window()
 except Exception as e:

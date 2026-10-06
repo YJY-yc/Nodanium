@@ -17,8 +17,8 @@ class SmoothIndicatorPanel(wx.Panel):
     """自定义平滑指示块面板 - 支持60fps平滑动画"""
     def __init__(self, parent):
         super().__init__(parent)
-        self.target_position = 0  # 目标位置百分比 0-100
-        self.current_position = 0  # 当前显示位置
+        self.target_position = 0  
+        self.current_position = 0  
         self.indicator_width = INDICATOR_WIDTH
         self.animation_start_time = None
         self.start_position = 0
@@ -34,7 +34,7 @@ class SmoothIndicatorPanel(wx.Panel):
 
         self.timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_animation_tick, self.timer)
-        self.timer.Start(16)  # 60 FPS
+      
     def stop_timer(self):
         """停止动画定时器"""
         if hasattr(self, 'timer') and self.timer.IsRunning():
@@ -63,12 +63,12 @@ class SmoothIndicatorPanel(wx.Panel):
         
  
         dc.SetPen(wx.Pen(wx.Colour(0, 255, 0), 1))
-        dc.DrawLine(x_pos, 0, x_pos + self.indicator_width, 0)  # 上边框
-        dc.DrawLine(x_pos, 0, x_pos, height)  # 左边框
+        dc.DrawLine(x_pos, 0, x_pos + self.indicator_width, 0)  
+        dc.DrawLine(x_pos, 0, x_pos, height) 
         
         dc.SetPen(wx.Pen(wx.Colour(0, 150, 0), 1))
-        dc.DrawLine(x_pos + self.indicator_width, 0, x_pos + self.indicator_width, height)  # 右边框
-        dc.DrawLine(x_pos, height-1, x_pos + self.indicator_width, height-1)  # 下边框
+        dc.DrawLine(x_pos + self.indicator_width, 0, x_pos + self.indicator_width, height) 
+        dc.DrawLine(x_pos, height-1, x_pos + self.indicator_width, height-1)  # 下
         
     def on_size(self, event):
         """面板大小改变时刷新"""
@@ -102,6 +102,8 @@ class SmoothIndicatorPanel(wx.Panel):
         self.start_position = self.current_position
         self.animation_start_time = time.time()
         self.is_animating = True
+        if not self.timer.IsRunning():
+            self.timer.Start(16)  
     
     def on_animation_tick(self, event):
         """动画定时器回调 - 60fps"""
@@ -111,13 +113,14 @@ class SmoothIndicatorPanel(wx.Panel):
         current_time = time.time()
         elapsed = current_time - self.animation_start_time
         
-        # 动画持续时间：300ms
+
         animation_duration = 0.3
         
         if elapsed >= animation_duration:
-            # 动画结束
+       
             self.current_position = self.target_position
             self.is_animating = False
+            self.timer.Stop()
         else:
     
             progress = elapsed / animation_duration
@@ -145,43 +148,43 @@ class SmoothIndicatorPanel(wx.Panel):
     
     def update_display(self):
         """更新迷你窗口显示"""
-        # 获取流量数据
+
         net_io = psutil.net_io_counters()
         total_sent = net_io.bytes_sent
         total_recv = net_io.bytes_recv
         
-        # 计算总流量
+    
         total_bytes = total_sent + total_recv
         total_gb = total_bytes / (1024 ** 3)
         
         # 更新数显
         int_part, dec_part = self.format_gb_for_display(total_gb)
         
-        # 整数部分最多显示5位
+        
         if len(int_part) > 5:
             int_part = int_part[-5:]
         
-        # 确保整数部分有5位
+      
         int_part = int_part.zfill(5)
         
-        # 更新数字显示
+       
         for i in range(5):
             self.mini_digits[i].SetLabel(int_part[i])
         
-        # 更新小数部分
+        
         self.mini_digits[5].SetLabel(dec_part[0] if len(dec_part) > 0 else "0")
         self.mini_digits[6].SetLabel(dec_part[1] if len(dec_part) > 1 else "0")
         
-        # 更新转盘位置
+      
         remainder = total_bytes % ONE_ROUND_BYTES
         progress = (remainder / ONE_ROUND_BYTES) * 100
         self.mini_indicator.set_position(progress, animate=True)
         
-        # 更新圈数显示
+      
         total_rounds = total_bytes // ONE_ROUND_BYTES
         self.mini_rounds_label.SetLabel(f"圈:{total_rounds}")
         
-        # 更新速率显示（简化计算）
+ 
         if not hasattr(self, 'last_update_time'):
             self.last_update_time = time.time()
             self.last_total_bytes = total_bytes
@@ -199,7 +202,7 @@ class SmoothIndicatorPanel(wx.Panel):
         
         self.mini_speed_label.SetLabel(f"{speed_mb:.1f} MB/s")
         
-        # 更新速率颜色
+
         if speed_mb < 1:
             self.mini_speed_label.SetForegroundColour(wx.Colour(0, 130, 0))
         elif speed_mb < 10:
@@ -207,7 +210,7 @@ class SmoothIndicatorPanel(wx.Panel):
         else:
             self.mini_speed_label.SetForegroundColour(wx.Colour(220, 0, 0))
         
-        # 递归调用
+    
         wx.CallLater(500, self.update_display)
     
     def format_gb_for_display(self, value_gb):
@@ -235,48 +238,61 @@ def get_system_total_traffic():
         'recv_speed': 0
     }
 
-def calculate_speed():
-    """计算实时速率（需要上次的数据）"""
 
-    if not hasattr(calculate_speed, 'last_time'):
-        calculate_speed.last_time = time.time()
-        calculate_speed.last_sent = 0
-        calculate_speed.last_recv = 0
-        
-        # 获取初始数据
-        net_io = psutil.net_io_counters()
-        calculate_speed.last_sent = net_io.bytes_sent
-        calculate_speed.last_recv = net_io.bytes_recv
-        
-        return 0, 0
-    
-    current_time = time.time()
-    time_diff = current_time - calculate_speed.last_time
-    
-    if time_diff < 0.1:  
-        return 0, 0
-    
+_speed_state = {
+    "time": None,
+    "sent": 0,
+    "recv": 0,
+    "sent_speed": 0.0,
+    "recv_speed": 0.0,
+}
+SPEED_MIN_INTERVAL = 0.2 
+SPEED_SMOOTHING = 0.5     
+
+
+def calculate_speed():
+    """计算实时速率（全局平滑，供多个调用方共用）"""
     net_io = psutil.net_io_counters()
     current_sent = net_io.bytes_sent
     current_recv = net_io.bytes_recv
-    
-    # 计算速率
-    sent_speed = (current_sent - calculate_speed.last_sent) / time_diff
-    recv_speed = (current_recv - calculate_speed.last_recv) / time_diff
-    
+    current_time = time.time()
 
-    calculate_speed.last_time = current_time
-    calculate_speed.last_sent = current_sent
-    calculate_speed.last_recv = current_recv
+
+    if _speed_state["time"] is None:
+        _speed_state["time"] = current_time
+        _speed_state["sent"] = current_sent
+        _speed_state["recv"] = current_recv
+        return 0.0, 0.0
+
+    time_diff = current_time - _speed_state["time"]
+
+
+    if time_diff < SPEED_MIN_INTERVAL:
+        return _speed_state["sent_speed"], _speed_state["recv_speed"]
+
+   
+    delta_sent = max(0, current_sent - _speed_state["sent"])
+    delta_recv = max(0, current_recv - _speed_state["recv"])
+
+    instant_sent = delta_sent / time_diff
+    instant_recv = delta_recv / time_diff
+
     
-    return sent_speed, recv_speed
+    _speed_state["sent_speed"] += (instant_sent - _speed_state["sent_speed"]) * SPEED_SMOOTHING
+    _speed_state["recv_speed"] += (instant_recv - _speed_state["recv_speed"]) * SPEED_SMOOTHING
+
+    _speed_state["time"] = current_time
+    _speed_state["sent"] = current_sent
+    _speed_state["recv"] = current_recv
+
+    return _speed_state["sent_speed"], _speed_state["recv_speed"]
 
 def bytes_to_gb(bytes_value):
-    """字节转换为GB"""
+    
     return bytes_value / (1024 ** 3)
 
 def format_gb_for_display(value_gb):
-    """格式化GB显示，专门用于7位数码管显示"""
+   
 
     formatted = f"{value_gb:,.2f}"
     
@@ -295,10 +311,10 @@ def format_gb_for_display(value_gb):
     return int_part, dec_part
 
 def get_traffic_data():
-    """获取完整的流量数据"""
+   
 
     traffic_data = get_system_total_traffic()
-        # 计算实时速率
+     
     sent_speed, recv_speed = calculate_speed()
     traffic_data['sent_speed'] = sent_speed
     traffic_data['recv_speed'] = recv_speed
@@ -306,10 +322,9 @@ def get_traffic_data():
     return traffic_data
 
 def create_panel(parent):
-    """创建流量监控面板的主函数"""
-    panel = parent
     
-    # 设置面板背景色
+    panel = parent
+
     panel.SetBackgroundColour(wx.Colour(240, 240, 240))
     
    
@@ -320,12 +335,11 @@ def create_panel(parent):
     indicator_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
     main_sizer.Add(indicator_label, 0, wx.LEFT | wx.TOP, 10)
     
-    # 平滑指示器
+
     indicator_panel = SmoothIndicatorPanel(panel)
     indicator_panel.SetMinSize((-1, 25))
     main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.ALL, 10)
-    
-    # 数显
+
     display_panel = wx.Panel(panel)
     display_panel.SetBackgroundColour(wx.Colour(50, 50, 50))
     display_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -336,7 +350,7 @@ def create_panel(parent):
     total_label.SetForegroundColour(wx.Colour(200, 200, 255))
     display_sizer.Add(total_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 10)
     
-    #数字显示框
+
     digits = []
     
 
@@ -512,7 +526,8 @@ def create_panel(parent):
         else:
             speed_label.SetForegroundColour(wx.Colour(200, 0, 0))
         
-        wx.CallLater(int(REFRESH_INTERVAL * 1000), update_display)
+        if _state["visible"]:
+            _schedule(int(REFRESH_INTERVAL * 1000))
     
 
     def on_type_change(event):
@@ -520,9 +535,34 @@ def create_panel(parent):
         traffic_type = type_combo.GetValue()
     
     type_combo.Bind(wx.EVT_COMBOBOX, on_type_change)
-    
-    wx.CallLater(100, update_display)
-    
+
+    # 仅在本页可见时刷新，避免启动阶段/后台页持续重绘拖慢首帧
+    _state = {"visible": False, "scheduled": False}
+
+    def _schedule(ms):
+        if _state["scheduled"] or not _state["visible"]:
+            return
+        _state["scheduled"] = True
+
+        def _run():
+            _state["scheduled"] = False
+            if _state["visible"]:
+                update_display()
+        wx.CallLater(ms, _run)
+
+    def _on_show(evt):
+        evt.Skip()
+        _state["visible"] = bool(evt.IsShown())
+        if _state["visible"]:
+            _schedule(100)
+    try:
+        panel.Bind(wx.EVT_SHOW, _on_show)
+    except Exception:
+        pass
+    _state["visible"] = bool(panel.IsShown()) if hasattr(panel, "IsShown") else False
+    if _state["visible"]:
+        _schedule(100)
+
     return panel
 
 def create_mini_window(parent):

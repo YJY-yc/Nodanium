@@ -35,6 +35,25 @@ def get_download_dir():
 
 stop_download = False
 
+
+def safe_ui_call(func, *args, **kwargs):
+    """安全的跨线程 UI 更新：控件已销毁时静默跳过，避免
+    “wrapped C/C++ object of type X has been deleted”。"""
+    def _run():
+        try:
+            obj = getattr(func, "__self__", None)
+            if obj is not None and hasattr(obj, "IsBeingDeleted") and obj.IsBeingDeleted():
+                return
+            func(*args, **kwargs)
+        except RuntimeError:
+            pass
+        except Exception as e:
+            print(f"UI 更新失败: {e}")
+    try:
+        wx.CallAfter(_run)
+    except Exception:
+        pass
+
 def create_download_window(parent, urls, thread_count, main_site, download_dir, folder_name, list_ctrl=None, image_list=None, chunk_size=1024*1024):
    
     folder_path = os.path.join(download_dir, folder_name)
@@ -76,6 +95,10 @@ def create_download_window(parent, urls, thread_count, main_site, download_dir, 
     new_export_btn.Bind(wx.EVT_BUTTON, lambda event: on_export(download_window, new_undownloaded_list))
     
     panel.SetSizer(vbox)
+    # 顶层窗口需有 sizer，否则子控件在 GTK 下可能被分配到 4px 空间
+    _win_sizer = wx.BoxSizer(wx.VERTICAL)
+    _win_sizer.Add(panel, 1, wx.EXPAND)
+    download_window.SetSizer(_win_sizer)
     download_window.Show()
     
     stop_btn.Bind(wx.EVT_BUTTON, lambda event: on_stop(download_window))
@@ -160,6 +183,10 @@ def create_download_app():
     ))
      
     panel.SetSizer(vbox)
+    # 顶层窗口需有 sizer，否则子控件在 GTK 下可能被分配到 4px 空间
+    _win_sizer = wx.BoxSizer(wx.VERTICAL)
+    _win_sizer.Add(panel, 1, wx.EXPAND)
+    frame.SetSizer(_win_sizer)
     frame.Show()
     app.MainLoop()
 
@@ -277,7 +304,7 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
     if main_site and not main_site.endswith('/'):
         main_site += '/'
 
-    wx.CallAfter(undownloaded_list.Set, urls)
+    safe_ui_call(undownloaded_list.Set, urls)
     
     total = len(urls)
     completed = 0
@@ -309,12 +336,12 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
                         try:
                             index = undownloaded_list.FindString(current_url)
                             if index != wx.NOT_FOUND:
-                                wx.CallAfter(undownloaded_list.Delete, index)
+                                safe_ui_call(undownloaded_list.Delete, index)
                         except Exception as e:
                             print(f"删除URL失败: {current_url}, 错误: {e}")
                     progress = int(completed/total*100)
-                    wx.CallAfter(gauge.SetValue, progress)
-                    wx.CallAfter(remaining_label.SetLabel, f"剩余项: {total - completed}")
+                    safe_ui_call(gauge.SetValue, progress)
+                    safe_ui_call(remaining_label.SetLabel, f"剩余项: {total - completed}")
                    
                     futures.remove(url_future)
             wx.MilliSleep(50)
@@ -472,11 +499,11 @@ def start_download(urls, thread_count, gauge, remaining_label, undownloaded_list
             traceback.print_exc()
         
         refresh_download_list(list_ctrl, image_list)
-    wx.CallAfter(gauge.Hide)
-    wx.CallAfter(remaining_label.Hide)
-    wx.CallAfter(undownloaded_list.Show)
-    wx.CallAfter(undownloaded_list.SetFocus)
-    wx.CallAfter(window.Layout)
+    safe_ui_call(gauge.Hide)
+    safe_ui_call(remaining_label.Hide)
+    safe_ui_call(undownloaded_list.Show)
+    safe_ui_call(undownloaded_list.SetFocus)
+    safe_ui_call(window.Layout)
 
 
 def download_file(url, download_dir, add_single_record=True, filename="", chunk_size=1024*8):

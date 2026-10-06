@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "3.6.1.1"
+vision = "4.0.1.0"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -27,6 +27,57 @@ time_ctrl=None
 
 
 sys_type = platform.system()
+
+
+def restart_as_elevated():
+    """以管理员(Windows)/root(Linux)身份重启本程序。
+
+    Windows 用 ShellExecuteW 的 runas 谓词提权；Linux 用 pkexec。
+    提权启动新实例后退出当前进程。另：会先释放单实例锁。
+    """
+    import subprocess
+    # 释放单实例锁，避免提权重启的新实例被判定为“程序已运行”
+    try:
+        import tempfile
+        lock = os.path.join(tempfile.gettempdir(),
+                            f".{os.path.basename(sys.argv[0])}.lock")
+        if os.path.exists(lock):
+            os.remove(lock)
+    except Exception as e:
+        logging.warning(f"释放单实例锁失败: {e}")
+
+    if getattr(sys, 'frozen', False):
+        exe = sys.executable
+        args = sys.argv[1:]
+    else:
+        exe = sys.executable
+        args = [os.path.abspath(sys.argv[0])] + sys.argv[1:]
+
+    if sys_type == "Windows":
+        import ctypes
+        params = subprocess.list2cmdline(args)
+        workdir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", exe, params, workdir, 1)
+        # ShellExecuteW 返回值 > 32 表示成功；1223 表示用户取消了 UAC
+        if int(ret) <= 32:
+            if int(ret) == 1223:
+                wx.MessageBox("已取消提权。", "提示", wx.OK | wx.ICON_INFORMATION)
+            else:
+                wx.MessageBox(f"提权启动失败（代码 {ret}）。", "错误", wx.OK | wx.ICON_ERROR)
+            return
+    else:
+        cmd = [exe] + args
+        try:
+            subprocess.Popen(["pkexec"] + cmd)
+        except FileNotFoundError:
+            wx.MessageBox("未找到 pkexec，请手动以 root 运行。", "错误", wx.OK | wx.ICON_ERROR)
+            return
+    # 新实例已启动，退出当前非特权进程
+    logging.info('以特权身份重启')
+    sys.exit(0)
+
+
 if sys_type == "Windows":
     roaming_path = os.getenv('APPDATA', '')
     target_folder = os.path.join(roaming_path, "Nodanium")
@@ -119,20 +170,13 @@ try:
 except ImportError as e:
     print(f"导入 DNSShower 失败: {e}")
 
-try:
-    import CommonDownload
-except ImportError as e:
-    print(f"导入 CommonDownload 失败: {e}")
 
 try:
     import NetworkTraffic
 except ImportError as e:
     print(f"导入 NetworkTraffic 失败: {e}")
 
-try:
-    import analyze
-except ImportError as e:
-    print(f"导入 analyze 失败: {e}")
+
 
 try:
     import DownloadUI
@@ -251,6 +295,7 @@ def on_analyze(event):
     except Exception:
         pass
 
+    import analyze 
     analyze.on_analyze_button(url_text_analyze.GetValue(), head, int(time_ctrl.GetValue()), check.GetValue())
 
 def on_go_to_file(event):
@@ -295,6 +340,7 @@ def on_download_button(event):
     except Exception:
         pass
 
+    import CommonDownload
     CommonDownload.download_file(url, dirs+filename, he)
     print(f"URL: {url}, 文件名: {filename}")
     logging.debug(f"URL: {url}, 文件名: {filename}")
@@ -402,6 +448,370 @@ def _clipboard_new_download(frame):
         logging.error(f"从剪贴板新建下载错误: {e}")
 
 
+def _startup_aria2_and_ready():
+    def get_ctl():
+        return globals().get('status_ctl')
+
+    enabled = False
+    try:
+        import TorrentDownload as TD
+        enabled = TD.aria2_enabled()
+    except Exception as e:
+        logging.error(f"aria2 状态读取失败: {e}")
+
+    if not enabled:
+        c = get_ctl()
+        if c:
+            wx.CallAfter(c.set_state, "aria2 已禁用")
+            wx.CallAfter(c.ready)
+        return
+
+    c = get_ctl()
+    if c:
+        c.set_state("正在启动 aria2 服务...")
+
+    def work():
+        ok, err = False, None
+        try:
+            import TorrentDownload as TD
+            exe = TD.find_aria2c()
+            if not exe:
+                err = "未找到 aria2 引擎"
+            else:
+                cfg = TD.read_config()
+                port = int(cfg.get("aria2_rpc_port", 6800) or 6800)
+                secret = cfg.get("aria2_rpc_secret", "") or None
+                opts = cfg.get("aria2_options") or {}
+                svc = TD.get_service(exe=exe, port=port, secret=secret, options=opts)
+                if svc is None:
+                    err = "aria2 服务不可用"
+                else:
+                    ok, err = svc.start()
+        except Exception as e:
+            err = str(e)
+        cc = get_ctl()
+        if cc:
+            def done():
+                cc.set_state("aria2 服务已就绪" if ok else
+                             ("aria2 服务启动失败" + ((": " + str(err)) if err else "")))
+                cc.ready()
+            wx.CallAfter(done)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _set_btn_icon(btn, icon_name, size=20):
+   
+    try:
+        path = os.path.join("icons", icon_name)
+        if not os.path.isfile(path):
+            return btn
+        img = wx.Image(path, wx.BITMAP_TYPE_PNG)
+        if not img.IsOk():
+            return btn
+        img = img.Scale(size, size, wx.IMAGE_QUALITY_HIGH)
+        btn.SetBitmap(wx.Bitmap(img))
+        btn.SetBitmapMargins(6, 0)
+    except Exception:
+        pass
+    return btn
+
+
+def _add_press_feedback(btn):
+
+    try:
+        base = btn.GetBackgroundColour()
+    except Exception:
+        return btn
+
+    def _shade(colour, factor):
+        return wx.Colour(max(0, min(255, int(colour.Red() * factor))),
+                         max(0, min(255, int(colour.Green() * factor))),
+                         max(0, min(255, int(colour.Blue() * factor))))
+
+    def on_down(event):
+        btn.SetBackgroundColour(_shade(base, 0.85))
+        btn.Refresh()
+        event.Skip()
+
+    def on_up(event):
+        btn.SetBackgroundColour(base)
+        btn.Refresh()
+        event.Skip()
+
+    btn.Bind(wx.EVT_LEFT_DOWN, on_down)
+    btn.Bind(wx.EVT_LEFT_UP, on_up)
+    btn.Bind(wx.EVT_LEAVE_WINDOW, on_up)
+    return btn
+
+
+
+_TRACKED_LIBS = [
+    ("wx", "wxPython"),
+    ("requests", "requests"),
+    ("urllib3", "urllib3"),
+    ("bs4", "beautifulsoup4"),
+    ("selenium", "selenium"),
+    ("playwright", "playwright"),
+    ("PIL", "Pillow"),
+    ("dns", "dnspython"),
+    ("psutil", "psutil"),
+    ("Notifier", None),
+    ("gi", "PyGObject"),
+    ("lxml", "lxml"),
+]
+
+
+def _aria2c_present():
+    """检测程序内是否携带 aria2c(优先 bin/，兼容旧版根目录)。"""
+    names = ("aria2c.exe", "aria2c") if platform.system() == "Windows" else ("aria2c", "aria2c.exe")
+    for base in (os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "bin"),
+                 os.path.dirname(os.path.abspath(sys.argv[0]))):
+        if any(os.path.exists(os.path.join(base, n)) for n in names):
+            return True
+    return False
+
+
+# 扫描自身源码时跳过的目录
+_USED_SCAN_SKIP_DIRS = {"venv", "venv311", ".git", "__pycache__",
+                        "NodaniumLauncher.dist", "bin", "node_modules", "docs"}
+
+
+def _scan_used_modules():
+    """静态扫描程序自身源码，返回实际 import 的顶层模块集合。"""
+    import ast
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    tops = set()
+    for root, dirs, files in os.walk(root_dir):
+        dirs[:] = [d for d in dirs if d not in _USED_SCAN_SKIP_DIRS]
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(root, fn), encoding="utf-8", errors="ignore") as fh:
+                    tree = ast.parse(fh.read())
+            except Exception:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        tops.add(a.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level == 0 and node.module:
+                        tops.add(node.module.split(".")[0])
+    return tops
+
+
+def _classify_used_modules():
+    """把程序实际使用的模块分为 (标准库, 第三方库) 两个排序列表。"""
+    tops = _scan_used_modules()
+    std_names = getattr(sys, "stdlib_module_names", None) or set()
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    local = {os.path.splitext(f)[0] for f in os.listdir(root_dir) if f.endswith(".py")}
+    std = sorted(n for n in tops if n in std_names)
+    third = sorted(n for n in tops if n not in std_names and n not in local
+                   and not n.startswith("_"))
+    return std, third
+
+
+def _used_modules_text():
+    """把程序实际使用的库整理为分组文本，用于复制/展示。"""
+    std, third = _classify_used_modules()
+    lines = ["=== 使用的库 ===", f"标准库 ({len(std)}): " + "  ".join(std), "",
+             f"第三方库 ({len(third)}): " + "  ".join(third)]
+    return "\n".join(lines)
+
+
+def _get_pkg_version(name):
+    """优先用 importlib.metadata 获取已安装包版本，失败再回退到模块 __version__。"""
+    try:
+        from importlib.metadata import version as _pkg_version, PackageNotFoundError
+        try:
+            return _pkg_version(name)
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        mod = __import__(name)
+        for attr in ("__version__", "version", "VERSION"):
+            v = getattr(mod, attr, None)
+            if isinstance(v, str):
+                return v
+    except Exception:
+        pass
+    return None
+
+
+def _collect_library_info():
+    """收集软件运行环境与所有关键库的版本信息，返回格式化文本。"""
+    lines = []
+    lines.append("=== 运行环境 ===")
+    lines.append(f"程序版本    : {vision}")
+    lines.append(f"Python      : {sys.version.split()[0]}")
+    lines.append(f"Python路径  : {sys.executable}")
+    lines.append(f"操作系统    : {platform.system()} {platform.release()} ({platform.version()})")
+    lines.append(f"架构        : {platform.machine()}")
+    lines.append(f"处理器      : {platform.processor() or '未知'}")
+    lines.append(f"字节序      : {sys.byteorder}")
+    lines.append(f"数据目录    : {target_folder}")
+    lines.append(f"下载目录    : {dirs}")
+    lines.append("")
+    lines.append("=== 依赖库 ===")
+    for mod_name, disp_name in _TRACKED_LIBS:
+        ver = _get_pkg_version(mod_name)
+        lines.append(f"{disp_name:<14}: {ver if ver else '未安装'}")
+
+    try:
+        lines.append("")
+        lines.append("=== 内置组件 ===")
+        lines.append(f"aria2c      : {'存在' if _aria2c_present() else '未找到'}")
+        lines.append(f"wxWidgets   : {wx.version()}")
+        lines.append(f"GTK版本     : {wx.PlatformInfo}")
+    except Exception as e:
+        lines.append(f"(内置组件信息获取失败: {e})")
+
+    lines.append("")
+    lines.append(_used_modules_text())
+    return "\n".join(lines)
+
+
+def _collect_runtime_info():
+    """收集运行环境信息，返回 (标签, 值) 列表。"""
+    rows = [
+        ("程序版本", vision),
+        ("Python", sys.version.split()[0]),
+        ("操作系统", f"{platform.system()} {platform.release()}"),
+        ("架构", platform.machine()),
+        ("数据目录", target_folder),
+        ("下载目录", dirs),
+    ]
+    return rows
+
+
+def show_library_info_dialog(parent):
+    """关于页「详细信息」按钮：弹出居中排版的鸣谢式版本信息窗口。"""
+    dlg = wx.Dialog(parent, title="详细信息", size=(640, 560),
+                    style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+    dlg.SetBackgroundColour(wx.Colour(250, 250, 252))
+
+    outer = wx.BoxSizer(wx.VERTICAL)
+
+    scroll = wx.ScrolledWindow(dlg, style=wx.VSCROLL)
+    scroll.SetScrollRate(0, 15)
+    scroll.SetBackgroundColour(wx.Colour(250, 250, 252))
+
+    def _clamp_scroll(evt=None):
+        try:
+            best = scroll.GetBestVirtualSize()
+            cw, ch = scroll.GetClientSize()
+            scroll.SetVirtualSize((max(best.width, cw), max(best.height, ch)))
+        except Exception:
+            pass
+        if evt is not None:
+            evt.Skip()
+
+    scroll.Bind(wx.EVT_SIZE, _clamp_scroll)
+
+    body = wx.BoxSizer(wx.VERTICAL)
+    body.AddSpacer(24)
+
+    def add_centered_label(text, size_delta=0, bold=False, colour=(60, 60, 60), gap=4, wrap=0):
+        lbl = wx.StaticText(scroll, label=text)
+        lbl.SetForegroundColour(wx.Colour(*colour))
+        lbl.SetFont(wx.Font(FontSize + size_delta, wx.FONTFAMILY_DEFAULT,
+                            wx.FONTSTYLE_NORMAL,
+                            wx.FONTWEIGHT_BOLD if bold else wx.FONTWEIGHT_NORMAL,
+                            faceName=fontname))
+        if wrap:
+            lbl.Wrap(wrap)
+        body.Add(lbl, 0, wx.ALIGN_CENTER_HORIZONTAL | wx.TOP | wx.LEFT | wx.RIGHT, gap)
+        return lbl
+
+    def add_section_title(text, gap=18):
+        lbl = wx.StaticText(scroll, label=text)
+        lbl.SetForegroundColour(wx.Colour(150, 150, 155))
+        lbl.SetFont(wx.Font(FontSize - 5, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL,
+                            wx.FONTWEIGHT_BOLD, faceName=fontname))
+        body.Add(lbl, 0, wx.ALIGN_CENTER_HORIZONTAL | wx.TOP, gap)
+        line = wx.StaticLine(scroll, size=(360, 1))
+        body.Add(line, 0, wx.ALIGN_CENTER_HORIZONTAL | wx.TOP | wx.BOTTOM, 6)
+
+    # 顶部标题
+    add_centered_label("Nodanium", 8, bold=True, colour=(40, 40, 40), gap=0)
+    add_centered_label(f"版本 {vision}", -2, colour=(130, 130, 130), gap=4)
+
+    # 运行环境
+    add_section_title("运 行 环 境", gap=26)
+    for label, value in _collect_runtime_info():
+        add_centered_label(f"{label}  {value}", -4, colour=(90, 90, 90), gap=3)
+
+    # 依赖库
+    add_section_title("依 赖 库")
+    for mod_name, disp_name in _TRACKED_LIBS:
+        ver = _get_pkg_version(mod_name)
+        color = (90, 90, 90) if ver else (190, 150, 150)
+        add_centered_label(f"{disp_name}  {ver if ver else '未安装'}", -4,
+                           colour=color, gap=3)
+
+    # 内置组件
+    add_section_title("内 置 组 件")
+    try:
+        has_aria = _aria2c_present()
+        add_centered_label(f"aria2c  {'存在' if has_aria else '未找到'}", -4,
+                           colour=(90, 90, 90), gap=3)
+        add_centered_label(f"wxWidgets  {wx.version()}", -4, colour=(90, 90, 90), gap=3)
+    except Exception:
+        pass
+
+    # 使用的库（程序实际 import 的标准库 + 第三方库）
+    add_section_title("使 用 的 库")
+    try:
+        std, third = _classify_used_modules()
+        add_centered_label(f"标准库  {len(std)} 个", -4, bold=True,
+                           colour=(80, 80, 80), gap=6)
+        add_centered_label("  ".join(std) if std else "无", -6,
+                           colour=(110, 110, 110), gap=3, wrap=560)
+        add_centered_label(f"第三方库  {len(third)} 个", -4, bold=True,
+                           colour=(80, 80, 80), gap=8)
+        add_centered_label("  ".join(third) if third else "无", -6,
+                           colour=(110, 110, 110), gap=3, wrap=560)
+    except Exception as e:
+        add_centered_label(f"(使用的库信息获取失败: {e})", -4,
+                           colour=(190, 150, 150), gap=3)
+
+    body.AddSpacer(28)
+    scroll.SetSizer(body)
+    scroll.FitInside()
+    _clamp_scroll()
+    outer.Add(scroll, 1, wx.EXPAND | wx.ALL, 6)
+
+    # 底部按钮
+    btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    copy_btn = wx.Button(dlg, label="复制信息")
+    close_btn = wx.Button(dlg, wx.ID_CANCEL, label="关闭")
+
+    def on_copy(event):
+        info = _collect_library_info()
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(info))
+            wx.TheClipboard.Close()
+            wx.MessageBox("版本信息已复制到剪贴板", "提示",
+                          wx.OK | wx.ICON_INFORMATION, dlg)
+
+    copy_btn.Bind(wx.EVT_BUTTON, on_copy)
+    close_btn.Bind(wx.EVT_BUTTON, lambda e: dlg.EndModal(wx.ID_CANCEL))
+    btn_sizer.AddStretchSpacer(1)
+    btn_sizer.Add(copy_btn, 0, wx.ALL, 6)
+    btn_sizer.Add(close_btn, 0, wx.ALL, 6)
+    outer.Add(btn_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    dlg.SetSizer(outer)
+    dlg.CentreOnParent()
+    dlg.ShowModal()
+    dlg.Destroy()
+
+
 def create_tray_icon(frame):
     tray = None
     try:
@@ -435,37 +845,75 @@ def create_tray_icon(frame):
         traceback.print_exc()
         logging.error(f"创建托盘图标失败: {e}")
         return None
-    gif_path = "icons/load.gif"
-
     status_bar = frame.CreateStatusBar(3)
     status_bar.SetStatusWidths([-1, -2, -1])
     status_bar.SetStatusText("Nodanium", 1)
     status_bar.SetStatusText(f"版本: {vision}", 2)
 
-    animation = wx.adv.Animation(gif_path)
-    if animation.IsOk():
-    
-        def init_animation():
-            animation_ctrl = wx.adv.AnimationCtrl(status_bar, -1, animation)
-            animation_ctrl.Play()
 
-            def update_animation_position():
-                try:
-                    rect = status_bar.GetFieldRect(0)
-                    animation_ctrl.SetPosition((rect.x, rect.y))
-                    animation_ctrl.SetSize((rect.width, rect.height))
-                except Exception:
-                    pass  
+    _IDLE_BG = wx.Colour(240, 240, 240)
+    _READY_BG = wx.Colour(60, 200, 90)
 
-            update_animation_position()
+    def _lerp(c1, c2, t):
+        return wx.Colour(int(c1.Red() + (c2.Red() - c1.Red()) * t),
+                         int(c1.Green() + (c2.Green() - c1.Green()) * t),
+                         int(c1.Blue() + (c2.Blue() - c1.Blue()) * t))
 
-            def on_size(event):
-                update_animation_position()
-                event.Skip()
+    class _StatusBarCtl(object):
+       
 
-            status_bar.Bind(wx.EVT_SIZE, on_size)
-        
-        wx.CallAfter(init_animation)
+        def __init__(self, bar):
+            self.bar = bar
+            self.timer = wx.Timer(bar)
+            self.bar.Bind(wx.EVT_TIMER, self._on_tick, self.timer)
+            self._step = 0
+            self._total = 12          # 12 步 × 50ms ≈ 0.6s：一半渐入绿、一半渐出白
+            self._msg = ""
+            self.set_state("正在初始化...")
+
+        def set_state(self, text):
+            
+            self._msg = text
+            try:
+                self.bar.SetStatusText(text, 0)
+            except Exception:
+                pass
+
+        def ready(self):
+       
+            self._step = 0
+            self.set_state("就绪")
+            self.timer.Start(50)
+            self._on_tick(None)
+
+        def _apply(self, t):
+       
+            try:
+                self.bar.SetBackgroundColour(_lerp(_IDLE_BG, _READY_BG, t))
+                self.bar.SetForegroundColour(_lerp(wx.Colour(120, 120, 120),
+                                                   wx.Colour(20, 110, 45), t))
+                self.bar.Refresh()
+            except Exception:
+                pass
+
+        def _on_tick(self, evt):
+            self._step += 1
+            half = self._total / 2.0
+            if self._step <= half:
+                t = self._step / half                     
+            else:
+                t = max(0.0, 1.0 - (self._step - half) / half) 
+            self._apply(t)
+            if self._step >= self._total:
+                self.timer.Stop()
+                self._apply(0.0)
+
+    status_ctl = _StatusBarCtl(status_bar)
+    try:
+        frame._status_ctl = status_ctl
+    except Exception:
+        pass
+    globals()['status_ctl'] = status_ctl
 
 
     def create_menu():
@@ -535,7 +983,7 @@ def create_tray_icon(frame):
     
     tray.Bind(wx.adv.EVT_TASKBAR_RIGHT_DOWN, on_right_click)
 
-    # 托盘菜单项“从剪贴板新建下载”：在 Linux AppIndicator 等仅支持菜单的托盘中同样可用。
+
 
     return tray  
 def Window(silence=False):
@@ -587,6 +1035,11 @@ def Window(silence=False):
                   wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, 
                   faceName=fontname))
 
+    _frame_sizer = wx.BoxSizer(wx.VERTICAL)
+    _frame_sizer.Add(listbook, 1, wx.EXPAND)
+    frame.SetSizer(_frame_sizer)
+    frame.Layout()
+
     
     _nav_tree = listbook.GetTreeCtrl()
     def _on_tree_sel_changing(event):
@@ -626,6 +1079,9 @@ def Window(silence=False):
         try:
             w = _nav_tree.GetSize().width
             h = listbook.GetClientSize().height
+  
+            if w < 0 or h < 1:
+                return
             _resize_bar.SetPosition((w, 0))
             _resize_bar.SetSize((8, h))
             _resize_bar.Raise()
@@ -668,9 +1124,18 @@ def Window(silence=False):
             try:
                 new_w = _sidebar_state.get('width', _nav_tree.GetSize().width)
                 if new_w >= SIDEBAR_MIN:
+           
+                    try:
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            fresh = json.load(f)
+                        if not isinstance(fresh, dict):
+                            fresh = dict(config)
+                    except Exception:
+                        fresh = dict(config)
+                    fresh['sidebar_width'] = new_w
                     config['sidebar_width'] = new_w
                     with open(config_path, 'w', encoding='utf-8') as f:
-                        json.dump(config, f, ensure_ascii=False, indent=4)
+                        json.dump(fresh, f, ensure_ascii=False, indent=4)
             except Exception as e:
                 logging.error(f"保存左树宽度失败: {e}")
             event.Skip()
@@ -701,6 +1166,7 @@ def Window(silence=False):
     panel11 = wx.Panel(listbook)
     panel12 = wx.Panel(listbook)
     panel14 = wx.Panel(listbook)
+    panel15 = wx.Panel(listbook)
     panel0.SetBackgroundColour(wx.Colour(255, 255, 255))
 
 
@@ -716,6 +1182,7 @@ def Window(silence=False):
     panel12.SetBackgroundColour(wx.Colour(255, 255, 255))
     panel13.SetBackgroundColour(wx.Colour(255, 255, 255))
     panel14.SetBackgroundColour(wx.Colour(255, 255, 255))
+    panel15.SetBackgroundColour(wx.Colour(255, 255, 255))
 
 
     listbook.AddPage(panel0, "主页", imageId=_icon_id('icons/home.png'))
@@ -734,10 +1201,11 @@ def Window(silence=False):
     listbook.AddSubPage(panel11, "文件服务", imageId=_icon_id('icons/filesever.png'))
     listbook.AddSubPage(panel6, "转发文件", imageId=_icon_id('icons/path_to_icon6.png'))  
     listbook.AddSubPage(panel14, "流量转盘", imageId=_icon_id('icons/traffic.png'))  
-    # 管理功能（父节点）
+    # 管理功能
     listbook.AddPage(wx.Panel(listbook), "管理功能", imageId=_icon_id('icons/manage.png'))
     listbook.AddSubPage(panel12, "端口管理器", imageId=_icon_id('icons/path_to_icon11.png')) 
     listbook.AddSubPage(panel13, "下载管理", imageId=_icon_id('icons/download.png'))  
+    listbook.AddSubPage(panel15, "BT 下载", imageId=_icon_id('icons/download2.png'))
     
     
     try:
@@ -749,6 +1217,12 @@ def Window(silence=False):
 
     PortManager.port_manager_panel(panel12)
     DownloadUI.create_download_panel(panel13)
+    try:
+        import Aria2Panel
+        Aria2Panel.create_aria2_panel(panel15, frame)
+    except Exception as e:
+        print(f"aria2 管理面板加载失败: {e}")
+        logging.error(f"aria2 管理面板加载失败: {e}")
     sizer = wx.BoxSizer(wx.VERTICAL)
     sizer.Add(fileshare_panel, 1, wx.EXPAND|wx.ALL, 5)
     panel11.SetSizer(sizer)
@@ -844,7 +1318,7 @@ def Window(silence=False):
     panel3_sizer.Add(hbox_url, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
     hbox_timeout = wx.BoxSizer(wx.HORIZONTAL)
-    time_ctrl = wx.SpinCtrl(panel3, value="5", min=1, max=120, size=(100, -1))
+    time_ctrl = wx.SpinCtrl(panel3, value="5", min=1, max=120, size=(100, 28))
     hbox_timeout.Add(wx.StaticText(panel3, label="超时时间 (秒):"), 0, wx.ALL | wx.CENTER, 5)
     hbox_timeout.Add(time_ctrl, 0, wx.ALL | wx.CENTER, 5)
     panel3_sizer.Add(hbox_timeout, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
@@ -939,6 +1413,12 @@ def Window(silence=False):
     download_button_op.SetFont(btn_font)
     button_sizer.Add(download_button_op, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
 
+    detail_button = wx.Button(panel4, label="详细信息", size=btn_size)
+    detail_button.SetFont(btn_font)
+    detail_button.SetToolTip("查看软件所用全部库与运行环境版本信息")
+    detail_button.Bind(wx.EVT_BUTTON, lambda event: show_library_info_dialog(frame))
+    button_sizer.Add(detail_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+
     panel4_sizer.Add(button_sizer, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 3)
 
     network_info_text = wx.TextCtrl(panel4, size=(-1, 120), style=wx.TE_MULTILINE | wx.TE_READONLY)
@@ -1024,7 +1504,7 @@ def Window(silence=False):
     
 
     right_panel = wx.Panel(panel0)
-    right_panel.SetBackgroundColour(wx.Colour(255, 255, 255))  # 白色卡片
+    right_panel.SetBackgroundColour(wx.Colour(255, 255, 255))  
     right_sizer = wx.BoxSizer(wx.VERTICAL)
     
 
@@ -1034,43 +1514,59 @@ def Window(silence=False):
     right_sizer.Add(action_title, 0, wx.BOTTOM, 15)
     
     def on_new_download(event):
-        listbook.ChangeSelection(1)  # 切换到下载功能页
+   
+        try:
+            import DownloadUI
+            wx.CallAfter(lambda: DownloadUI.trigger_new_download(frame))
+        except Exception as e:
+            print(f"打开新建下载窗口错误: {e}")
+            logging.error(f"打开新建下载窗口错误: {e}")
     
-    new_download_btn = wx.Button(right_panel, label="   新建下载")
-    new_download_btn.SetBitmap(wx.Bitmap("./icons/add.png"), wx.LEFT)
+    new_download_btn = wx.Button(right_panel, label="新建下载")
     new_download_btn.SetBackgroundColour(wx.Colour(0, 122, 204))
     new_download_btn.SetForegroundColour(wx.Colour(255, 255, 255))
     new_download_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     new_download_btn.SetMinSize((280, 40))
     new_download_btn.Bind(wx.EVT_BUTTON, on_new_download)
+    _set_btn_icon(new_download_btn, "add.png")
+    _add_press_feedback(new_download_btn)
     right_sizer.Add(new_download_btn, 0, wx.BOTTOM, 8)
     
-    # 打开保存路径按钮
+
     def on_open_save_path(event):
-        if os.path.isdir(dirs):
+        # 按住 Alt 打开程序缓存目录，否则打开保存路径
+      
+        if wx.GetKeyState(wx.WXK_ALT):
+            open_dir = target_folder
+        else:
+            open_dir = dirs
+        if os.path.isdir(open_dir):
             if platform.system() == "Windows":
-                os.startfile(dirs)
+                os.startfile(open_dir)
             else:
                 import subprocess
-                subprocess.run(["xdg-open", dirs])
+                subprocess.run(["xdg-open", open_dir])
     
-    open_path_btn = wx.Button(right_panel, label="   打开保存路径")
-    open_path_btn.SetBitmap(wx.Bitmap("./icons/view.png"), wx.LEFT)
+    open_path_btn = wx.Button(right_panel, label="打开保存路径")
     open_path_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
     open_path_btn.SetForegroundColour(wx.Colour(50, 50, 50))
     open_path_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     open_path_btn.SetMinSize((280, 40))
+
     open_path_btn.Bind(wx.EVT_BUTTON, on_open_save_path)
+    _set_btn_icon(open_path_btn, "view.png")
+    _add_press_feedback(open_path_btn)
     right_sizer.Add(open_path_btn, 0, wx.BOTTOM, 8)
     
 
-    pref_btn = wx.Button(right_panel, label="   首选项")
-    pref_btn.SetBitmap(wx.Bitmap("./icons/init.png"), wx.LEFT)
+    pref_btn = wx.Button(right_panel, label="首选项")
     pref_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
     pref_btn.SetForegroundColour(wx.Colour(50, 50, 50))
     pref_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     pref_btn.SetMinSize((280, 40))
     pref_btn.Bind(wx.EVT_BUTTON, options.options)
+    _set_btn_icon(pref_btn, "tool.png")
+    _add_press_feedback(pref_btn)
     right_sizer.Add(pref_btn, 0, wx.BOTTOM, 8)
     
 
@@ -1078,33 +1574,53 @@ def Window(silence=False):
         logging.info('程序退出')
         sys.exit(0)
     
-    exit_btn = wx.Button(right_panel, label="   退出程序")
-    exit_btn.SetBitmap(wx.Bitmap("./icons/exit.png"), wx.LEFT)
+    exit_btn = wx.Button(right_panel, label="退出程序")
     exit_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
     exit_btn.SetForegroundColour(wx.Colour(50, 50, 50))
     exit_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     exit_btn.SetMinSize((280, 40))
     exit_btn.Bind(wx.EVT_BUTTON, on_exit)
+    _set_btn_icon(exit_btn, "exit.png")
+    _add_press_feedback(exit_btn)
     right_sizer.Add(exit_btn, 0, wx.BOTTOM, 8)
     
 
-    link = LinkButton.create_link_button(right_panel, "https://yjymain.rth1.xyz", "icons/link_small.png", "https://yjymain.rth1.xyz", (280, 40))
-    if link:
-        link.SetBackgroundColour(wx.Colour(230, 230, 230))
-        right_sizer.Add(link, 0, wx.BOTTOM, 8)
+
+    try:
+        import Adminchecker as _AC
+        _is_admin = _AC.is_admin()
+    except Exception:
+        _is_admin = False
+
+    def on_restart_elevated(event):
+        if _is_admin:
+            wx.MessageBox("程序已在特权身份下运行。", "提示", wx.OK | wx.ICON_INFORMATION)
+            return
+        restart_as_elevated()
+
+    elevate_label = "以管理员身份重启" if sys_type == "Windows" else "以 root 身份重启"
+    elevate_btn = wx.Button(right_panel, label=elevate_label)
+    elevate_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
+    elevate_btn.SetForegroundColour(wx.Colour(50, 50, 50))
+    elevate_btn.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    elevate_btn.SetMinSize((280, 40))
+    elevate_btn.Bind(wx.EVT_BUTTON, on_restart_elevated)
+  
+    _add_press_feedback(elevate_btn)
+    right_sizer.Add(elevate_btn, 0, wx.BOTTOM, 8)
     
 
     separator = wx.StaticLine(right_panel, style=wx.LI_HORIZONTAL)
     separator.SetForegroundColour(wx.Colour(200, 200, 200))
     right_sizer.Add(separator, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 15)
     
-    # 最近下载标题
+    
     recent_title = wx.StaticText(right_panel, label="最近下载")
     recent_title.SetForegroundColour(wx.Colour(50, 50, 50))
     recent_title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_SEMIBOLD))
     right_sizer.Add(recent_title, 0, wx.BOTTOM, 10)
     
-    # 最近下载列表
+
     recent_list = wx.ListCtrl(right_panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_NONE)
     recent_list.SetBackgroundColour(wx.Colour(255, 255, 255))
     recent_list.SetForegroundColour(wx.Colour(50, 50, 50))
@@ -1185,7 +1701,7 @@ def Window(silence=False):
                 return json.load(f)
         return []
     
-    history_list = wx.ListCtrl(panel5, style=wx.LC_REPORT|wx.LC_SINGLE_SEL, pos=(10, 10), size=(windowPos[0]-170,windowPos[1]-130))
+    history_list = wx.ListCtrl(panel5, style=wx.LC_REPORT|wx.LC_SINGLE_SEL, pos=(10, 10), size=(max(100, windowPos[0]-170), max(100, windowPos[1]-130)))
     history_list.InsertColumn(0, 'URL', width=300)
     history_list.InsertColumn(1, '文件', width=200)
     history_list.InsertColumn(2, '时间', width=150)
@@ -1255,7 +1771,8 @@ def Window(silence=False):
             logging.error(f"右键菜单错误: {e}")
     def on_resize(event):
         new_size = frame.GetSize()
-        history_list.SetSize((new_size[0]-170, new_size[1]-130))
+
+        history_list.SetSize((max(100, new_size[0] - 170), max(100, new_size[1] - 130)))
         event.Skip()
     
     frame.Bind(wx.EVT_SIZE, on_resize)
@@ -1271,15 +1788,38 @@ def Window(silence=False):
         print(f"加载历史记录时出错: {e}")
         logging.error(f"加载历史记录时出错: {e}")
 
-    if not silence:
-        frame.Show()
 
     tray = create_tray_icon(frame)
-    
+
     if silence:
         # 静默模式：只创建托盘，不显示窗口
         frame.Hide()
     else:
+     
+        try:
+            frame.Layout()
+            listbook.Layout()
+        except Exception:
+            pass
         frame.Show()
+
+    _startup_aria2_and_ready()
+
+    try:
+        frame.Update()
+        listbook.Refresh()
+        listbook.Update()
+    except Exception:
+        pass
+
+    def _force_first_paint():
+        try:
+            frame.Layout()
+            listbook.Layout()
+            listbook.Refresh()
+            listbook.Update()
+        except Exception as e:
+            logging.warning(f"首次重绘失败: {e}")
+    wx.CallAfter(_force_first_paint)
 
     app.MainLoop()

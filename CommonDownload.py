@@ -3,9 +3,18 @@
 # SPDX-License-Identifier: MIT
 import wx
 import os
+import platform
+import subprocess
 import requests
 from wx import MessageBox, ProgressDialog
-from winotify import Notification, audio
+from Notifier import Notification
+
+def _open_file(path):
+    if platform.system() == "Windows":
+        os.startfile(path)
+    else:
+        subprocess.Popen(["xdg-open", path])
+
 def download_file(url, local_path, headers=None):
     global dirs
     print(headers)
@@ -55,11 +64,11 @@ def download_file(url, local_path, headers=None):
                 app_id="Advanced Network Toolset",
                 title="下载完成",
                 msg=f"文件已保存到：{local_path}",
-                duration="long"
+                duration="long",
+                file_path=local_path,
+                on_click=lambda p=local_path: _open_file(p)
             )
-            toast.set_audio(audio.Default, loop=False)
-            
-            toast.show()
+            toast.show_async()
 
            
             dlg = wx.MessageDialog(None, f"文件已保存到：\n{local_path}", "下载完成", 
@@ -68,7 +77,7 @@ def download_file(url, local_path, headers=None):
             cancel_btn = dlg.FindWindowById(wx.ID_CANCEL)
             if dlg.ShowModal() == wx.ID_OK:
                 
-                os.startfile(local_path)
+                _open_file(local_path)
             dlg.Destroy()
             return 0
         except Exception as e:

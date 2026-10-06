@@ -10,14 +10,192 @@ import logging
 import platform
 import uuid
 import subprocess
+import threading
 from urllib.parse import urlparse
 from FileIcon import get_file_icon, get_fallback_icon, THUMBNAIL_EXTENSIONS
+
+
+class RubberBandListCtrl(wx.ListCtrl):
+    """支持鼠标框选（橡皮筋多选）的 ListCtrl。
+
+    GTK 下的 wx.ListCtrl 原生不支持拖拽框选，这里用鼠标事件自行实现：在项目上/空白
+    处按住左键拖拽时绘制选择矩形，并把矩形内的行加入选择。Windows/MSW 行为一致。
+
+    注意：GTK 的 mouse motion 事件中按钮状态不可靠（LeftIsDown 常为 False），因此
+    自行用 DOWN/UP 事件维护按键状态，不依赖 event.LeftIsDown()。框选只在左键按下
+    并产生位移后启动，右键/中键绝不触发。
+    """
+
+    DRAG_THRESHOLD = 4
+
+    def __init__(self, *args, **kwargs):
+        style = kwargs.get("style", 0)
+        style = style & ~wx.LC_SINGLE_SEL
+        kwargs["style"] = style
+        super().__init__(*args, **kwargs)
+        self._left_pressed = False
+        self._right_pressed = False
+        self._middle_pressed = False
+        self._rb_pending = False
+        self._rb_active = False
+        self._rb_start = wx.Point(0, 0)
+        self._rb_end = wx.Point(0, 0)
+        self._rb_base_sel = []
+        self._rb_ctrl = False
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_left_down)
+        self.Bind(wx.EVT_LEFT_UP, self._on_left_up)
+        self.Bind(wx.EVT_RIGHT_DOWN, self._on_right_down)
+        self.Bind(wx.EVT_RIGHT_UP, self._on_right_up)
+        self.Bind(wx.EVT_MIDDLE_DOWN, self._on_middle_down)
+        self.Bind(wx.EVT_MIDDLE_UP, self._on_middle_up)
+        self.Bind(wx.EVT_MOTION, self._on_motion)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self._on_capture_lost)
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+
+    def _item_rect(self, idx):
+        try:
+            rect = self.GetItemRect(idx)
+        except Exception:
+            return None
+        if rect is None:
+            return None
+        if isinstance(rect, (tuple, list)):
+            if len(rect) < 4:
+                return None
+            return wx.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        return rect if rect.GetWidth() > 0 and rect.GetHeight() > 0 else None
+
+    def _reset_rubber_band(self):
+        self._rb_pending = False
+        self._rb_active = False
+        if self.HasCapture():
+            try:
+                self.ReleaseMouse()
+            except Exception:
+                pass
+
+    def _on_capture_lost(self, event):
+        self._rb_pending = False
+        self._rb_active = False
+        self.Refresh(False)
+
+    def _on_left_down(self, event):
+        self._left_pressed = True
+        if self._right_pressed or self._middle_pressed:
+            self._reset_rubber_band()
+            event.Skip()
+            return
+        self.SetFocus()
+        self._rb_pending = True
+        self._rb_active = False
+        self._rb_ctrl = event.ControlDown()
+        self._rb_start = event.GetPosition()
+        self._rb_end = self._rb_start
+        event.Skip()
+
+    def _on_left_up(self, event):
+        self._left_pressed = False
+        was_active = self._rb_active
+        self._reset_rubber_band()
+        if was_active:
+            self.Refresh(False)
+        event.Skip()
+
+    def _on_right_down(self, event):
+        self._right_pressed = True
+        self._reset_rubber_band()
+        self.Refresh(False)
+        event.Skip()
+
+    def _on_right_up(self, event):
+        self._right_pressed = False
+        event.Skip()
+
+    def _on_middle_down(self, event):
+        self._middle_pressed = True
+        self._reset_rubber_band()
+        self.Refresh(False)
+        event.Skip()
+
+    def _on_middle_up(self, event):
+        self._middle_pressed = False
+        event.Skip()
+
+    def _on_motion(self, event):
+        if not self._left_pressed or self._right_pressed or self._middle_pressed:
+            event.Skip()
+            return
+        if not self._rb_pending and not self._rb_active:
+            event.Skip()
+            return
+        pos = event.GetPosition()
+        if not self._rb_active:
+            if abs(pos.x - self._rb_start.x) < self.DRAG_THRESHOLD and \
+               abs(pos.y - self._rb_start.y) < self.DRAG_THRESHOLD:
+                return
+            self._rb_active = True
+            if not self._rb_ctrl:
+                self._clear_selection()
+            self._rb_base_sel = self._get_selected_indices()
+            if not self.HasCapture():
+                self.CaptureMouse()
+        self._rb_end = pos
+        self._apply_rubber_band()
+        self.Refresh(False)
+
+    def _on_paint(self, event):
+        event.Skip()
+        if not self._rb_active:
+            return
+        dc = wx.ClientDC(self)
+        rect = wx.Rect(self._rb_start, self._rb_end)
+        dc.SetPen(wx.Pen(wx.Colour(0, 120, 215), 1, wx.PENSTYLE_SOLID))
+        dc.SetBrush(wx.Brush(wx.Colour(0, 120, 215, 40), wx.BRUSHSTYLE_SOLID))
+        dc.SetLogicalFunction(wx.INVERT)
+        dc.DrawRectangle(rect)
+        dc.SetLogicalFunction(wx.COPY)
+
+    def _get_selected_indices(self):
+        result = []
+        idx = self.GetFirstSelected()
+        while idx != -1:
+            result.append(idx)
+            idx = self.GetNextSelected(idx)
+        return result
+
+    def _clear_selection(self):
+        idx = self.GetFirstSelected()
+        while idx != -1:
+            self.SetItemState(idx, 0, wx.LIST_STATE_SELECTED)
+            idx = self.GetNextSelected(idx)
+
+    def _select_index(self, idx, selected=True):
+        mask = wx.LIST_STATE_SELECTED
+        self.SetItemState(idx, mask if selected else 0, mask)
+
+    def _apply_rubber_band(self):
+        rect = wx.Rect(self._rb_start, self._rb_end)
+        band = rect
+        base = set(self._rb_base_sel)
+        for idx in range(self.GetItemCount()):
+            ir = self._item_rect(idx)
+            if ir is None:
+                continue
+            in_band = band.Intersects(ir)
+            if in_band:
+                self._select_index(idx, True)
+                base.add(idx)
+            elif idx in base:
+                self._select_index(idx, True)
+            else:
+                self._select_index(idx, False)
+
 
 def get_filename_from_url(url):
     parsed = urlparse(url)
     path = parsed.path or url
     return os.path.basename(path) or "download_file"
-# 跨平台数据目录配置
+
 def open_file_or_folder(file_path):
     """跨平台打开文件或文件夹"""
     sys_type = platform.system()
@@ -50,6 +228,16 @@ DATA_FOLDER = get_data_folder()
 HISTORY_FILE = os.path.join(DATA_FOLDER, 'History.json')
 PROCESS_DIR = os.path.join(DATA_FOLDER, 'DownloadProcess')
 
+
+def get_speed_unit():
+    """读取首选项配置的下载速度单位(与下载引擎支持的单位一致)。"""
+    try:
+        with open(os.path.join(DATA_FOLDER, 'config.json'), 'r', encoding='utf-8') as f:
+            unit = json.load(f).get('dl_speed_unit', 'MB/s')
+    except Exception:
+        unit = 'MB/s'
+    return unit if unit in ('MB/s', 'MiB/s', 'Mbps') else 'MB/s'
+
 def ensure_process_dir():
     """确保下载进度缓存目录存在"""
     try:
@@ -59,13 +247,10 @@ def ensure_process_dir():
     return PROCESS_DIR
 
 def is_fat_filesystem(path):
-    """判断目标路径所在文件系统是否为 FAT（FAT/FAT32/exFAT）。
-    FAT 文件系统不支持稀疏文件，应使用旧版下载引擎。
-    Windows 用 GetVolumeInformationW，Linux 用 statvfs/st_blocks 启发式判断。
-    """
+
     if not path:
         return False
-    # 确保路径指向存在的目录
+
     probe = path
     if os.path.isfile(probe):
         probe = os.path.dirname(probe)
@@ -92,7 +277,7 @@ def is_fat_filesystem(path):
             except Exception:
                 return False
         elif sys_type == "Linux":
-            # 用 df -T 查询文件系统类型
+    
             try:
                 import subprocess
                 base = probe
@@ -130,7 +315,7 @@ def resolve_resume_file(record):
     cache_file = os.path.join(PROCESS_DIR, json_name)
     if os.path.exists(cache_file):
         return cache_file
-    # 兼容旧版本：保存路径下的进度文件
+
     if save_path:
         legacy = os.path.join(save_path, json_name)
         if os.path.exists(legacy):
@@ -138,7 +323,7 @@ def resolve_resume_file(record):
     return ""
 
 
-# 已下载完成的颜色
+
 def _apply_record_visual(list_ctrl, index, record):
     """对文件名列应用可视化样式：
     - 已完成且文件存在 -> 文件名变绿
@@ -151,7 +336,7 @@ def _apply_record_visual(list_ctrl, index, record):
             if os.path.exists(file_path):
                 list_ctrl.SetItemTextColour(index, wx.Colour(0, 140, 60))
             else:
-                # 文件被删除，使用删除线字体
+                
                 font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
                 font.SetStrikethrough(True)
                 list_ctrl.SetItemFont(index, font)
@@ -160,13 +345,18 @@ def _apply_record_visual(list_ctrl, index, record):
         pass
 
 
-# 未完成项目需要展示背景进度条的 status 集合
+
 INCOMPLETE_STATUSES = ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断")
 
 
 def _get_record_progress(record):
-    """读取进度文件，返回未完成项目的下载进度百分比（0~100），无则返回 None。"""
-    resume_file = resolve_resume_file(record)
+
+    if record.get("proto") == "bt":
+ 
+        uid = str(record.get("uuid", ""))
+        resume_file = os.path.join(PROCESS_DIR, "bt_" + uid[:8] + ".json")
+    else:
+        resume_file = resolve_resume_file(record)
     if not resume_file or not os.path.exists(resume_file):
         return None
     try:
@@ -187,25 +377,43 @@ download_history = []
 _download_list_ctrl = None
 _image_list_ctrl = None
 
+_history_lock = threading.RLock()
+
+
+def _history_guard(func):
+
+    def wrapper(*args, **kwargs):
+        with _history_lock:
+            return func(*args, **kwargs)
+    return wrapper
+
 def generate_uuid():
-    """生成唯一识别码UUID"""
+  
     return str(uuid.uuid4())
 
 def save_download_history():
-    """保存下载历史"""
-    try:
-        history_dir = os.path.dirname(HISTORY_FILE)
-        if not os.path.exists(history_dir):
-            os.makedirs(history_dir, exist_ok=True)
-            
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(download_history, f, ensure_ascii=False, indent=2)
-        print(f"成功保存 {len(download_history)} 条下载记录")
-        logging.info(f"成功保存 {len(download_history)} 条下载记录")
-    except Exception as e:
-        print(f"保存下载历史失败: {e}")
-        logging.error(f"保存下载历史失败: {e}")
 
+    with _history_lock:
+        try:
+            history_dir = os.path.dirname(HISTORY_FILE)
+            if not os.path.exists(history_dir):
+                os.makedirs(history_dir, exist_ok=True)
+            tmp = HISTORY_FILE + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(download_history, f, ensure_ascii=False, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp, HISTORY_FILE)
+            print(f"成功保存 {len(download_history)} 条下载记录")
+            logging.info(f"成功保存 {len(download_history)} 条下载记录")
+        except Exception as e:
+            print(f"保存下载历史失败: {e}")
+            logging.error(f"保存下载历史失败: {e}")
+
+@_history_guard
 def load_download_history():
     logging.info("读取下载记录")
 
@@ -246,8 +454,9 @@ def load_download_history():
         logging.error(f"加载下载历史失败: {e}")
         download_history = []
 
+@_history_guard
 def update_download_record_by_uuid(uuid, **kwargs):
-    """通过UID修改下载记录内容"""
+  
     global download_history
     for record in download_history:
         if record.get("uuid") == uuid:
@@ -269,7 +478,7 @@ def update_download_record_by_uuid(uuid, **kwargs):
     return False
 
 def get_download_record_by_uuid(uuid):
-    """通过UUID获取下载记录"""
+   
     for record in download_history:
         if record.get("uuid") == uuid:
             return record
@@ -280,7 +489,7 @@ if not download_history or len(download_history) == 0:
     load_download_history()
 
 def add_download_record(url, filename, save_path, status="已完成", file_size=0, download_items=None, batch_id=None, completed=None, total=None, file_count=None, success_count=None, failed_count=None):
-    """添加下载记录"""
+    
     record = {
         "uuid": generate_uuid(),
         "url": url,
@@ -314,8 +523,7 @@ def add_download_record(url, filename, save_path, status="已完成", file_size=
     return record
 
 def refresh_download_list(list_ctrl, image_list):
-    """刷新下载列表"""
- 
+
     
     
     list_ctrl.DeleteAllItems()
@@ -328,7 +536,7 @@ def refresh_download_list(list_ctrl, image_list):
         file_path = os.path.join(record["save_path"], record["filename"])
         
         ext = os.path.splitext(record["filename"])[1].lower()
-        # 图片文件按完整路径缓存以显示各自缩略图，其余类型按扩展名共享图标
+   
         if os.path.isfile(file_path) and ext in THUMBNAIL_EXTENSIONS:
             cache_key = file_path
         else:
@@ -382,7 +590,7 @@ def refresh_download_list(list_ctrl, image_list):
             else:
                 status = f"{status}{progress}"
         else:
-            # 非批量：所有未下载完毕的项目一律显示进度百分比（而非“失败/部分完成”等文字）
+        
             if status in INCOMPLETE_STATUSES and record.get("filename"):
                 pct = _get_record_progress(record)
                 if pct is not None:
@@ -427,7 +635,7 @@ def create_download_panel(parent):
     main_sizer.Add(line, 0, wx.EXPAND | wx.ALL, 5)
     
 
-    download_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_HRULES | wx.LC_VRULES)
+    download_list = RubberBandListCtrl(panel, style=wx.LC_REPORT | wx.LC_HRULES | wx.LC_VRULES)
   
     image_list = wx.ImageList(32, 32)
     download_list.AssignImageList(image_list, wx.IMAGE_LIST_SMALL)
@@ -448,7 +656,7 @@ def create_download_panel(parent):
     refresh_download_list(download_list, image_list)
   
     create_context_menu(download_list)
-    # 跨平台配置目录
+
     sys_type = platform.system()
     if sys_type == "Windows":
         config_dir = os.path.join(os.getenv('APPDATA', ''), 'Nodanium')
@@ -474,17 +682,23 @@ def create_download_panel(parent):
         import subprocess
         import platform
         sys_type = platform.system()
-        if sys_type == "Windows":
-            os.startfile(default_save_path)
+     
+        if wx.GetKeyState(wx.WXK_ALT):
+            open_path = ensure_process_dir()
         else:
-            # Linux 使用 xdg-open 命令
+            open_path = default_save_path
+        if sys_type == "Windows":
+            os.startfile(open_path)
+        else:
+      
             try:
-                subprocess.run(['xdg-open', default_save_path])
+                subprocess.run(['xdg-open', open_path])
             except Exception as ex:
                 wx.MessageBox(f"无法打开文件夹: {str(ex)}", "错误", wx.OK | wx.ICON_ERROR)
     
     open_folder_btn.Bind(wx.EVT_BUTTON, open_folder)
     download_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: on_item_activated(download_list, e))
+    download_list.Bind(wx.EVT_KEY_DOWN, lambda e: on_delete_key(e, download_list))
     refresh_btn.Bind(wx.EVT_BUTTON, lambda e: (
         
         refresh_download_list(download_list, image_list)
@@ -535,16 +749,31 @@ def on_context_menu(event, list_ctrl, menu):
     item = list_ctrl.HitTest(pos)[0]
     
     if item != -1:
-        list_ctrl.Select(item)
+        already = (list_ctrl.GetItemState(item, wx.LIST_STATE_SELECTED) & wx.LIST_STATE_SELECTED) != 0
+        if not already:
+            list_ctrl.Select(item)
      
         if 0 <= item < len(download_history):
             record = download_history[item]
-         
+          
+            is_bt = record.get("proto") == "bt"
             if record.get("url") == "批量下载文件夹":
                 menu.FindItemByPosition(2).Enable(True)  
             else:
                 menu.FindItemByPosition(2).Enable(False)
-            # 是否可恢复下载：未完成记录且存在断点进度文件
+            if is_bt:
+          
+                st = str(record.get("status", ""))
+                unfinished = ("下载中" in st) or ("取消" in st) or st.startswith("失败") \
+                    or ("未完成" in st)
+                try:
+                    menu.FindItemByPosition(3).Enable(unfinished)  
+                    menu.FindItemByPosition(4).Enable(True)        
+                except Exception:
+                    pass
+                list_ctrl.PopupMenu(menu, pos)
+                return
+      
             is_resumable = (
                 record.get("status", "") in ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断")
                 and bool(resolve_resume_file(record))
@@ -598,7 +827,7 @@ def on_menu_show_items(event, list_ctrl):
             vbox.Add(button_sizer, 0, wx.ALL | wx.CENTER, 10)
             
             def on_export_click(event):
-                """导出项目列表"""
+        
                
                 file_dlg = wx.FileDialog(
                     dlg,
@@ -661,73 +890,85 @@ def on_menu_show_items(event, list_ctrl):
         else:
             wx.MessageBox("这不是批量下载文件夹记录或没有包含的项目信息", "提示", wx.OK | wx.ICON_INFORMATION)
 def refresh_download_list(list_ctrl, image_list):
-    """刷新下载列表"""
-  
+
+    if list_ctrl is None or image_list is None:
+        return
+    try:
+        if list_ctrl.IsBeingDeleted() or image_list.IsBeingDeleted():
+            return
+    except Exception:
+        pass
     load_download_history()
-    
+    with _history_lock:
+        records = list(download_history)
+
     list_ctrl.DeleteAllItems()
     image_list.RemoveAll()
-    
-    icon_cache = {}
-    
-    for record in download_history:
-  
-        file_path = os.path.join(record["save_path"], record["filename"])
-        
- 
-        ext = os.path.splitext(record["filename"])[1].lower()
-        # 图片文件按完整路径缓存以显示各自缩略图，其余类型按扩展名共享图标
-        if os.path.isfile(file_path) and ext in THUMBNAIL_EXTENSIONS:
-            cache_key = file_path
-        else:
-            cache_key = ext
-        if cache_key not in icon_cache:
-            icon = get_file_icon(file_path)
-            icon_index = image_list.Add(icon)
-            icon_cache[cache_key] = icon_index
-        else:
-            icon_index = icon_cache[cache_key]
-        
-        index = list_ctrl.InsertItem(list_ctrl.GetItemCount(), icon_index)
-        
-    
-        file_size = record.get("file_size", 0)
-        if file_size == 0:
-            size_str = "未知"
-        elif file_size < 1024:
-            size_str = f"{file_size} B"
-        elif file_size < 1024 * 1024:
-            size_str = f"{file_size / 1024:.1f} KB"
-        elif file_size < 1024 * 1024 * 1024:
-            size_str = f"{file_size / (1024 * 1024):.1f} MB"
-        else:
-            size_str = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
-        
-        list_ctrl.SetItem(index, 1, record["filename"])
-        _apply_record_visual(list_ctrl, index, record)
-        list_ctrl.SetItem(index, 2, size_str)
 
-        status = record["status"]
-        if record.get("url") == "批量下载文件夹":
-            pass
-        else:
-            # 所有未下载完毕的项目一律显示进度百分比
-            if status in INCOMPLETE_STATUSES and record.get("filename"):
-                pct = _get_record_progress(record)
-                if pct is not None:
-                    status = f"{pct}%"
-                else:
-                    status = f"{status}（未完成）"
-        list_ctrl.SetItem(index, 3, status)
-        list_ctrl.SetItem(index, 4, record["save_path"])
-        list_ctrl.SetItem(index, 5, record["timestamp"])
+    icon_cache = {}
+
+    for record in records:
+        try:
+            save_path = record.get("save_path", "") or ""
+            filename = record.get("filename", "") or ""
+            status = record.get("status", "") or ""
+            timestamp = record.get("timestamp", "") or ""
+            file_path = os.path.join(save_path, filename)
+
+            ext = os.path.splitext(filename)[1].lower()
+
+            if os.path.isfile(file_path) and ext in THUMBNAIL_EXTENSIONS:
+                cache_key = file_path
+            else:
+                cache_key = ext
+            if cache_key not in icon_cache:
+                icon = get_file_icon(file_path)
+                icon_index = image_list.Add(icon)
+                icon_cache[cache_key] = icon_index
+            else:
+                icon_index = icon_cache[cache_key]
+
+            index = list_ctrl.InsertItem(list_ctrl.GetItemCount(), icon_index)
+
+            file_size = record.get("file_size", 0)
+            if file_size == 0:
+                size_str = "未知"
+            elif file_size < 1024:
+                size_str = f"{file_size} B"
+            elif file_size < 1024 * 1024:
+                size_str = f"{file_size / 1024:.1f} KB"
+            elif file_size < 1024 * 1024 * 1024:
+                size_str = f"{file_size / (1024 * 1024):.1f} MB"
+            else:
+                size_str = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
+
+            list_ctrl.SetItem(index, 1, filename)
+            _apply_record_visual(list_ctrl, index, record)
+            list_ctrl.SetItem(index, 2, size_str)
+
+            if record.get("url") == "批量下载文件夹":
+                pass
+            else:
+
+                if status in INCOMPLETE_STATUSES and filename:
+                    pct = _get_record_progress(record)
+                    if pct is not None:
+                        status = f"{pct}%"
+                    else:
+                        status = f"{status}（未完成）"
+            list_ctrl.SetItem(index, 3, status)
+            list_ctrl.SetItem(index, 4, save_path)
+            list_ctrl.SetItem(index, 5, timestamp)
+        except Exception as e:
+            logging.error(f"刷新下载记录失败: {e}")
+            continue
 def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
     
     import os
     import threading
     import platform
     
-    # 跨平台配置目录
+
     sys_type = platform.system()
     if sys_type == "Windows":
         config_dir = os.path.join(os.getenv('APPDATA', ''), 'Nodanium')
@@ -860,6 +1101,54 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
     
     batch_panel.SetSizer(batch_sizer)
     notebook.AddPage(batch_panel, "批量下载")
+    
+    # ==================== BT 下载选项卡 ====================
+    bt_panel = wx.Panel(notebook)
+    bt_sizer = wx.BoxSizer(wx.VERTICAL)
+    
+    bt_tip = wx.StaticText(bt_panel, label="支持磁力链 / HTTPS 种子链接 / 本地 .torrent 文件")
+    bt_tip.SetForegroundColour(wx.Colour(120, 120, 120))
+    bt_sizer.Add(bt_tip, 0, wx.ALL | wx.EXPAND, 5)
+    
+    bt_src_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    bt_src_label = wx.StaticText(bt_panel, label="磁力/种子链接:")
+    bt_source_text = wx.TextCtrl(bt_panel)
+    choose_torrent_btn = wx.Button(bt_panel, label="选择 .torrent 文件")
+    bt_src_sizer.Add(bt_src_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    bt_src_sizer.Add(bt_source_text, 1, wx.ALL, 5)
+    bt_src_sizer.Add(choose_torrent_btn, 0, wx.ALL, 5)
+    bt_sizer.Add(bt_src_sizer, 0, wx.EXPAND | wx.ALL, 5)
+    
+    bt_path_sizer = wx.BoxSizer(wx.HORIZONTAL)
+    bt_path_label = wx.StaticText(bt_panel, label="保存目录:")
+    bt_path_text = wx.TextCtrl(bt_panel, value=default_save_path)
+    bt_path_browse_btn = wx.Button(bt_panel, label="浏览...")
+    bt_path_sizer.Add(bt_path_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+    bt_path_sizer.Add(bt_path_text, 1, wx.ALL, 5)
+    bt_path_sizer.Add(bt_path_browse_btn, 0, wx.ALL, 5)
+    bt_sizer.Add(bt_path_sizer, 0, wx.EXPAND | wx.ALL, 5)
+    
+    bt_hint = wx.StaticText(bt_panel, label="BT 依赖 aria2 下载引擎；请先确保本机已安装 aria2。")
+    bt_hint.SetForegroundColour(wx.Colour(150, 150, 150))
+    bt_sizer.Add(bt_hint, 0, wx.ALL | wx.EXPAND, 5)
+    
+    bt_panel.SetSizer(bt_sizer)
+    notebook.AddPage(bt_panel, "BT下载")
+    
+    def on_choose_torrent(event):
+        with wx.FileDialog(dlg, "选择 torrent 种子文件", wildcard="种子文件 (*.torrent)|*.torrent|所有文件 (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fd:
+            if fd.ShowModal() == wx.ID_OK:
+                bt_source_text.SetValue(fd.GetPath())
+    
+    def on_bt_path_browse(event):
+        dd = wx.DirDialog(dlg, "选择保存目录", defaultPath=bt_path_text.GetValue())
+        if dd.ShowModal() == wx.ID_OK:
+            bt_path_text.SetValue(dd.GetPath())
+        dd.Destroy()
+    
+    choose_torrent_btn.Bind(wx.EVT_BUTTON, on_choose_torrent)
+    bt_path_browse_btn.Bind(wx.EVT_BUTTON, on_bt_path_browse)
 
     btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
     ok_btn = wx.Button(panel, wx.ID_OK, label="确定")
@@ -906,7 +1195,7 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
             try:
 
                 if path.lower().endswith('.json'):
-                    # JSON格式导入
+       
                     with open(path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         if isinstance(data, list):
@@ -957,7 +1246,7 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
     if dlg.ShowModal() == wx.ID_OK:
         current_page = notebook.GetSelection()
         
-        if current_page == 0:  # 单文件下载选项卡
+        if current_page == 0:  
             url = url_text.GetValue().strip()
             filename = filename_text.GetValue().strip()
             save_path = path_text.GetValue().strip()
@@ -998,27 +1287,35 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
                     if uuid:
                         set_status(uuid)
                     else:
-                        # 旧版下载引擎不回调 uuid，按 url+文件名+保存路径匹配记录
+     
                         for u in download_history:
                             if (u.get("url") == url and
                                 u.get("filename") == filename and
                                 u.get("save_path") == save_path):
                                 set_status(u.get("uuid"))
                                 break
-                    # 刷新列表显示
+                 
+                    if success:
+                        try:
+                            import DownloadCleanup
+                            DownloadCleanup.cleanup_download_artifacts(save_path, filename)
+                            DownloadCleanup.cleanup_stale_progress_files(PROCESS_DIR)
+                        except Exception:
+                            pass
+                   
                     wx.CallAfter(refresh_download_list, list_ctrl, image_list)
                 
                 def start_download():
                     try:
                         record = add_download_record(url, filename, save_path, "下载中", 0)
                         record_uuid = record["uuid"]
-                        # 记录断点进度文件路径（缓存在 DownloadProcess 目录下）
+                      
                         record["resume_file"] = os.path.join(PROCESS_DIR, f"{filename}_download_progress.json")
                         save_download_history()
-                        # 立即刷新列表显示新记录
+                       
                         wx.CallAfter(refresh_download_list, list_ctrl, image_list)
 
-                        # 目标盘是 FAT 格式时不支持稀疏文件，回退到旧版下载引擎
+                     
                         if is_fat_filesystem(save_path):
                             wx.CallAfter(
                                 wx.MessageBox,
@@ -1035,7 +1332,8 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
 
                         wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename, 
                                     Jobs=thread_count, Cache=5, Size=chunk_size, 
-                                    disable_ssl=True, completion_callback=on_download_completed)
+                                    disable_ssl=True, completion_callback=on_download_completed,
+                                    SpeedUnit=get_speed_unit())
                     except Exception as e:
                     
                         for idx, item in enumerate(download_history):
@@ -1052,7 +1350,7 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
                 thread.daemon = True
                 thread.start()
         
-        elif current_page == 1:  # 批量下载选项卡
+        elif current_page == 1:  
             if not batch_urls:
                 wx.MessageBox("请先导入网址文件", "错误", wx.OK | wx.ICON_ERROR)
                 dlg.Destroy()
@@ -1090,7 +1388,228 @@ def on_new_download(parent, list_ctrl, image_list, prefill_url=None):
             except Exception as e:
                 wx.MessageBox(f"启动批量下载失败: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
             return  
+        elif current_page == 2:  
+            source = bt_source_text.GetValue().strip()
+            save_path = bt_path_text.GetValue().strip()
+            
+            if not source:
+                wx.MessageBox("请输入磁力链/种子链接，或选择 .torrent 文件", "提示", wx.OK | wx.ICON_ERROR)
+                dlg.Destroy(); return
+            if not save_path:
+                wx.MessageBox("请输入保存目录", "提示", wx.OK | wx.ICON_ERROR)
+                dlg.Destroy(); return
+            
+            import TorrentDownload as _TD
+            ok, msg = _start_bt_download(parent, list_ctrl, image_list, source, save_path, _TD)
+            if msg:
+                wx.MessageBox(msg, "BT下载", wx.OK | wx.ICON_ERROR if not ok else wx.ICON_INFORMATION)
+                if not ok:
+                    dlg.Destroy()
+                    return
     dlg.Destroy()
+
+
+def _ensure_aria2c(parent, TD):
+    """确保 aria2 可用：仅查找本机已安装的 aria2c。
+
+    返回 (exe, error)；未找到时给出安装提示。
+    """
+    exe = TD.find_aria2c()
+    if exe:
+        return exe, None
+    return None, ("未找到 aria2 引擎。请先安装 aria2 后重试。\n"
+                  "Linux: sudo apt install aria2 / sudo pacman -S aria2\n"
+                  "Windows: 从 aria2 官网下载 aria2c.exe 放入程序目录或 PATH")
+
+
+def _start_bt_download(parent, list_ctrl, image_list, source, save_path, TD):
+    """创建 BT 下载记录, 弹出进度窗口并启动后台下载。返回 (成功?, 提示消息)。"""
+    import threading
+    use_service = bool(getattr(TD, "bt_use_service", lambda: False)())
+    exe, err = _ensure_aria2c(parent, TD)
+    if not exe:
+        return False, err
+
+
+    storage = {"status": "连接中", "gid": None, "engine_status": "active",
+               "name": "", "done": 0, "total": 0, "speed": 0,
+               "via_service": use_service}
+    try:
+        import BtorrentWindow
+        BtorrentWindow.show_bt_window(parent, storage, save_path)
+    except Exception as e:
+        print("BT 进度窗口打开失败:", e)
+
+    os.makedirs(save_path, exist_ok=True)
+    record = add_download_record(source, "BT下载", save_path, "下载中", 0)
+    record["proto"] = "bt"
+    record["source"] = source
+    record["bt_is_dir"] = True
+    record["bt_gid"] = ""
+    save_download_history()
+    uuid = record["uuid"]
+    wx.CallAfter(refresh_download_list, list_ctrl, image_list)
+
+    def tick():
+        try:
+            _exec_bt(uuid, source, save_path, exe, list_ctrl, image_list, TD, storage)
+        except Exception as e:
+            storage.update({"status": "失败", "err": str(e)})
+            update_download_record_by_uuid(uuid, status="失败")
+            wx.CallAfter(refresh_download_list, list_ctrl, image_list)
+    threading.Thread(target=tick, daemon=True).start()
+    return True, ""
+
+
+def _exec_bt(record_uuid, source, save_path, exe, list_ctrl, image_list, TD, storage=None):
+    """在后台线程执行 BT 下载并同步记录/列表/进度窗。
+
+    storage["via_service"] 为真时走常驻服务（可在 aria2 管理面板查看/做种），
+    否则走每任务独立会话(旧行为)。
+    """
+    prog_json = os.path.join(PROCESS_DIR, "bt_" + str(record_uuid)[:8] + ".json")
+    import time as _t
+    _last = {"sig": None, "t": 0.0}
+
+    def _needs_refresh(status, done, total, fname):
+        pct = (int(done * 100 // total) if total and total > 0 else -1)
+        sig = "%s|%d|%s" % (status, pct, fname)
+        now = _t.time()
+        if sig != _last["sig"] or (now - _last["t"]) >= 5.0:
+            _last["sig"] = sig
+            _last["t"] = now
+            return True
+        return False
+
+    def on_state(state, gid):
+        status = state.get("status", "下载中")
+        done = state.get("done", 0)
+        total = state.get("total", 0)
+        fname = (state.get("name") or "").strip()
+        files = state.get("files") or []
+
+        if storage is not None:
+            try:
+                storage["status"] = "完成" if status == "完成" else ("失败" if status == "失败" else status)
+                if gid:
+                    storage["gid"] = gid
+                if fname:
+                    storage["name"] = fname
+                storage["done"] = done
+                storage["total"] = total
+                storage["speed"] = state.get("speed", 0)
+            except Exception:
+                pass
+        try:
+            with open(prog_json, "w", encoding="utf-8") as f:
+                json.dump({"file_total_size": total or 0, "total_downloaded": done or 0}, f)
+        except Exception:
+            pass
+
+        rec = get_download_record_by_uuid(record_uuid) or {}
+
+        if fname and not rec.get("bt_name"):
+            update_download_record_by_uuid(record_uuid, filename=fname, bt_single=(len(files) == 1),
+                                           bt_name=fname, bt_gid=gid or "")
+            rec["filename"] = fname
+            rec["bt_single"] = len(files) == 1
+        if total and int(rec.get("file_size") or 0) != int(total):
+            update_download_record_by_uuid(record_uuid, file_size=int(total))
+            rec["file_size"] = int(total)
+
+
+        if files:
+            sig = tuple((f.get("path"), f.get("length"), f.get("completed")) for f in files)
+            if sig != _last.get("bt_files"):
+                _last["bt_files"] = sig
+                update_download_record_by_uuid(record_uuid, bt_files=list(files))
+                rec["bt_files"] = list(files)
+
+        path = ""
+        mf = [f for f in files if f.get("path")]
+        if status in ("完成", "做种中") and mf:
+
+            onep = mf[0]["path"]
+            full = onep if os.path.isabs(onep) else os.path.join(save_path, onep)
+            if len(mf) == 1:
+                update_download_record_by_uuid(record_uuid,
+                                               filename=os.path.basename(full),
+                                               save_path=os.path.dirname(full))
+                rec["filename"] = os.path.basename(full)
+                rec["save_path"] = os.path.dirname(full)
+            else:
+
+                bdir = os.path.dirname(full)
+                if os.path.basename(bdir) != os.path.basename(save_path) and bdir != save_path:
+                    update_download_record_by_uuid(record_uuid,
+                                                   filename=os.path.basename(bdir),
+                                                   save_path=os.path.dirname(bdir))
+                    rec["filename"] = os.path.basename(bdir)
+                    rec["save_path"] = os.path.dirname(bdir)
+                else:
+                    rec["filename"] = rec.get("filename")
+                    rec["save_path"] = save_path
+
+            update_download_record_by_uuid(record_uuid, status="已完成", bt_gid=gid or "",
+                                           bt_seeding=bool(state.get("seeding")))
+        elif status == "完成":
+            update_download_record_by_uuid(record_uuid, status="已完成", bt_gid=gid or "",
+                                           bt_seeding=bool(state.get("seeding")))
+        elif status == "失败":
+            update_download_record_by_uuid(record_uuid, status="失败: " + (state.get("err") or "BT下载异常"))
+        elif status == "取消":
+            update_download_record_by_uuid(record_uuid, status="已取消")
+        if _needs_refresh(status, done, total, fname):
+            wx.CallAfter(refresh_download_list, list_ctrl, image_list)
+
+    if storage is not None and storage.get("via_service"):
+        TD.run_bt_task_via_service(source, save_path, on_state)
+    else:
+        TD.run_bt_task(source, save_path, exe, on_state)
+
+
+def _delete_selected_records(list_ctrl, delete_files=False):
+    """删除列表中选中记录的删除逻辑（不含确认对话框）。"""
+    global download_history
+    selected_indices = []
+    item = list_ctrl.GetFirstSelected()
+    while item != -1:
+        selected_indices.append(item)
+        item = list_ctrl.GetNextSelected(item)
+    selected_indices.sort(reverse=True)
+    for index in selected_indices:
+        if not (0 <= index < len(download_history)):
+            continue
+        record = download_history[index]
+        if delete_files:
+            file_path = os.path.join(record["save_path"], record["filename"])
+            try:
+                if os.path.exists(file_path):
+                    if record.get("url") == "批量下载文件夹":
+                        import shutil
+                        shutil.rmtree(file_path)
+                    elif os.path.isfile(file_path):
+                        os.remove(file_path)
+                    elif os.path.isdir(file_path):
+                        import shutil
+                        shutil.rmtree(file_path)
+            except Exception as e:
+                wx.MessageBox(f"删除文件失败: {str(e)}", "警告", wx.OK | wx.ICON_WARNING)
+        download_history.pop(index)
+    save_download_history()
+    wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+
+
+def on_delete_key(event, list_ctrl):
+    """Delete 键直接删除选中记录（不弹确认框，不删除磁盘文件）。"""
+    code = event.GetKeyCode()
+    if code == wx.WXK_DELETE or code == getattr(wx, "WXK_NUMPAD_DELETE", -1):
+        if list_ctrl.GetSelectedItemCount() > 0:
+            _delete_selected_records(list_ctrl, delete_files=False)
+        return
+    event.Skip()
+
+
 def on_delete_download(list_ctrl):
     selected_count = list_ctrl.GetSelectedItemCount()
     if selected_count == 0:
@@ -1124,6 +1643,10 @@ def on_delete_download(list_ctrl):
     vbox.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 10)
     
     panel.SetSizer(vbox)
+    dlg_sizer = wx.BoxSizer(wx.VERTICAL)
+    dlg_sizer.Add(panel, 1, wx.EXPAND)
+    dlg.SetSizer(dlg_sizer)
+    dlg.Layout()
     
     def on_yes(event):
         dlg.EndModal(wx.ID_YES)
@@ -1135,56 +1658,7 @@ def on_delete_download(list_ctrl):
     no_btn.Bind(wx.EVT_BUTTON, on_no)
     
     if dlg.ShowModal() == wx.ID_YES:
-        global download_history
-        delete_files = delete_files_checkbox.GetValue()
-        
-
-        selected_indices = []
-        item = list_ctrl.GetFirstSelected()
-        while item != -1:
-            selected_indices.append(item)
-            item = list_ctrl.GetNextSelected(item)
-        
-   
-        selected_indices.sort(reverse=True)
-        
-        for index in selected_indices:
-            if 0 <= index < len(download_history):
-                record = download_history[index]
-                
-             
-                if delete_files:
-                    file_path = os.path.join(record["save_path"], record["filename"])
-                    try:
-                        if os.path.exists(file_path):
-                     
-                            if record.get("url") == "批量下载文件夹":
-                             
-                                import shutil
-                                shutil.rmtree(file_path)
-                            
-                                if os.path.exists(file_path) and os.path.isdir(file_path):
-                                    for root, dirs, files in os.walk(file_path, topdown=False):
-                                        for name in files:
-                                            os.remove(os.path.join(root, name))
-                                        for name in dirs:
-                                            os.rmdir(os.path.join(root, name))
-                                    os.rmdir(file_path)
-                            else:
-                           
-                                if os.path.isfile(file_path):
-                                    os.remove(file_path)
-                                elif os.path.isdir(file_path):
-                                    import shutil
-                                    shutil.rmtree(file_path)
-                    except Exception as e:
-                        wx.MessageBox(f"删除文件失败: {str(e)}", "警告", wx.OK | wx.ICON_WARNING)
-                
-                download_history.pop(index)
-        
-        save_download_history()
-   
-        wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+        _delete_selected_records(list_ctrl, delete_files=delete_files_checkbox.GetValue())
     dlg.Destroy()
 
 def on_clear_history(list_ctrl):
@@ -1213,6 +1687,11 @@ def on_clear_history(list_ctrl):
     sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
     
     panel.SetSizer(sizer)
+
+    dlg_sizer = wx.BoxSizer(wx.VERTICAL)
+    dlg_sizer.Add(panel, 1, wx.EXPAND)
+    dlg.SetSizer(dlg_sizer)
+    dlg.Layout()
     
     def on_yes(event):
         dlg.EndModal(wx.ID_YES)
@@ -1294,7 +1773,7 @@ def on_item_activated(list_ctrl, event):
             if not open_file_or_folder(file_path):
                 wx.MessageBox("无法打开文件", "错误", wx.OK | wx.ICON_ERROR)
         elif record.get("status", "") in ("下载中", "部分完成", "失败", "失败：分片重试耗尽", "失败：下载中断") and resolve_resume_file(record):
-            # 双击未完成且存在断点进度文件的记录 -> 恢复下载
+           
             resume_download_record(list_ctrl, record)
         else:
             wx.MessageBox("文件不存在或下载未完成", "提示", wx.OK | wx.ICON_INFORMATION)
@@ -1365,10 +1844,39 @@ def on_menu_open_folder(event, list_ctrl):
                 wx.MessageBox("无法打开文件夹", "错误", wx.OK | wx.ICON_ERROR)
         else:
             wx.MessageBox("文件不存在", "错误", wx.OK | wx.ICON_ERROR)
-def resume_download_record(list_ctrl, record):
-    """根据下载记录恢复未完成的下载。
-    需要缓存目录 DownloadProcess 下存在对应的断点进度文件。
+def _bt_relaunch(list_ctrl, record):
+    """BT 记录的“继续/重新下载”：用原磁力/种子重新发起 BT 任务。
+
+    已下载分片由 aria2 校核后直接续作/作种，因此可同时用于下载恢复与重新下载。
+    保存目录沿用原记录；新任务在「BT 下载 → 作种管理」中可见。
     """
+    src = record.get("source") or record.get("url") or ""
+    if not src or src == "BT下载":
+        wx.MessageBox("该记录缺少 BT 来源(磁力/种子)，无法恢复。", "提示",
+                      wx.OK | wx.ICON_INFORMATION)
+        return
+    save_path = record.get("save_path") or os.path.join(os.path.expanduser("~"), "Downloads")
+    try:
+        import TorrentDownload as _TD
+    except Exception as e:
+        wx.MessageBox(f"BT 引擎不可用：{e}", "错误", wx.OK | wx.ICON_ERROR)
+        return
+    try:
+        img = list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL)
+    except Exception:
+        img = None
+    parent = wx.GetTopLevelParent(list_ctrl)
+    ok, msg = _start_bt_download(parent, list_ctrl, img, src, save_path, _TD)
+    if not ok:
+        wx.MessageBox(f"恢复 BT 任务失败：{msg}", "错误", wx.OK | wx.ICON_ERROR)
+
+
+def resume_download_record(list_ctrl, record):
+ 
+
+    if record.get("proto") == "bt":
+        _bt_relaunch(list_ctrl, record)
+        return
     resume_file = resolve_resume_file(record)
     if not resume_file:
         wx.MessageBox("未找到断点进度文件，无法恢复下载。", "提示", wx.OK | wx.ICON_INFORMATION)
@@ -1394,14 +1902,21 @@ def resume_download_record(list_ctrl, record):
         if success:
             if set_uuid:
                 update_download_record_by_uuid(set_uuid, status="已完成", file_size=file_size)
-            # 完成后删除断点进度文件
+ 
             if resume_file and os.path.exists(resume_file):
                 try:
                     os.remove(resume_file)
                 except Exception:
                     pass
+  
+            try:
+                import DownloadCleanup
+                DownloadCleanup.cleanup_download_artifacts(save_path, record.get("filename", ""))
+                DownloadCleanup.cleanup_stale_progress_files(PROCESS_DIR)
+            except Exception:
+                pass
         else:
-            # 未能完成：磁盘上已有部分数据则标记为“部分完成”，否则为纯失败。
+           
             disk_size = 0
             try:
                 disk_size = os.path.getsize(os.path.join(save_path, record.get("filename", "")))
@@ -1415,9 +1930,7 @@ def resume_download_record(list_ctrl, record):
         wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
 
     def _do_resume():
-        # ResumeDownload 会创建 wx.Frame 并进入 MainLoop，必须在主线程执行，
-        # 否则在后台线程创建 wx GUI 会导致段错误。与 on_new_download 中
-        # 用 wx.CallAfter 启动 NewDownloadCore.Download 的方式保持一致。
+      
         try:
             import NewDownloadCore
             NewDownloadCore.ResumeDownload(
@@ -1425,7 +1938,7 @@ def resume_download_record(list_ctrl, record):
                 SavePath=save_path,
                 InputPath=save_path,
                 uuid=record_uuid,
-                SpeedUnit="MB/s",
+                SpeedUnit=get_speed_unit(),
                 completion_callback=on_resume_completed,
                 Jobs=0,
                 Size=0,
@@ -1438,12 +1951,12 @@ def resume_download_record(list_ctrl, record):
     if status == "下载中":
         update_download_record_by_uuid(record_uuid, status="失败")
         save_download_history()
-    # 必须在主线程执行（避免在后台线程创建 wx GUI 导致段错误）
+
     wx.CallAfter(_do_resume)
 
 
 def on_menu_resume(event, list_ctrl):
-    """恢复下载（右键菜单）"""
+    
     selected = list_ctrl.GetFirstSelected()
     if selected == -1 or selected >= len(download_history):
         return
@@ -1451,15 +1964,18 @@ def on_menu_resume(event, list_ctrl):
 
 
 def on_menu_redownload(event, list_ctrl):
-    """重新下载"""
+
     selected = list_ctrl.GetFirstSelected()
     if selected != -1 and 0 <= selected < len(download_history):
         record = download_history[selected]
+
+        if record.get("proto") == "bt":
+            _bt_relaunch(list_ctrl, record)
+            return
         url = record["url"]
         filename = record["filename"]
         save_path = record["save_path"]
         
-
         if record.get("url") == "批量下载文件夹":
 
             if record.get("download_items"):
@@ -1472,10 +1988,10 @@ def on_menu_redownload(event, list_ctrl):
                     
 
                     BatchDownload.create_download_window(
-                        None,  # parent_window
+                        None,  
                         urls, 
-                        4,  # thread_count
-                        "",  # main_site
+                        4,  
+                        "",  
                         save_path,
                         filename,
                         list_ctrl,
@@ -1486,8 +2002,66 @@ def on_menu_redownload(event, list_ctrl):
             else:
                 wx.MessageBox("批量下载文件夹记录缺少下载项目信息", "错误", wx.OK | wx.ICON_ERROR)
         else:
+           
+            _restart_download_record(list_ctrl, record)
 
-            wx.CallAfter(download_window, url, filename, save_path, True, thread_count=16, disable_ssl=True)
+def _restart_download_record(list_ctrl, record):
+    """用记录中的 URL/文件名/保存路径重新发起下载（新版引擎，FAT 盘回退旧引擎）。"""
+    url = record.get("url", "")
+    filename = record.get("filename", "")
+    save_path = record.get("save_path", "")
+    if not url or not filename:
+        wx.MessageBox("该记录缺少下载链接或文件名，无法重新下载。", "错误", wx.OK | wx.ICON_ERROR)
+        return
+    try:
+        os.makedirs(save_path, exist_ok=True)
+    except Exception as e:
+        wx.MessageBox(f"保存路径不可用：{e}", "错误", wx.OK | wx.ICON_ERROR)
+        return
+
+    record_uuid = record.get("uuid") or str(uuid.uuid4())
+    record["uuid"] = record_uuid
+    record["status"] = "下载中"
+    record["progress"] = 0
+    save_download_history()
+    wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+
+    def on_done(success, file_size, uuid=None):
+        _uuid = uuid or record_uuid
+        if success:
+            update_download_record_by_uuid(_uuid, status="已完成", file_size=file_size)
+            try:
+                import DownloadCleanup
+                DownloadCleanup.cleanup_download_artifacts(save_path, filename)
+            except Exception:
+                pass
+        else:
+            disk_size = 0
+            try:
+                disk_size = os.path.getsize(os.path.join(save_path, filename))
+            except Exception:
+                pass
+            update_download_record_by_uuid(_uuid, status="部分完成" if disk_size > 0 else "失败",
+                                           file_size=disk_size)
+        wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+
+    
+    if is_fat_filesystem(save_path):
+        wx.CallAfter(wx.MessageBox,
+                     "目标保存路径位于 FAT(含 exFAT) 文件系统，不支持稀疏文件，\n已切换到旧版下载引擎。",
+                     "提示", wx.OK | wx.ICON_INFORMATION)
+        wx.CallAfter(download_window, url, filename, save_path, 16, True, on_done)
+        return
+    try:
+        import NewDownloadCore
+        wx.CallAfter(NewDownloadCore.Download, record_uuid, url, save_path, filename,
+                     Jobs=16, Cache=5, disable_ssl=True, completion_callback=on_done,
+                     SpeedUnit=get_speed_unit())
+    except Exception as e:
+        update_download_record_by_uuid(record_uuid, status=f"失败: {e}")
+        save_download_history()
+        wx.CallAfter(refresh_download_list, list_ctrl, list_ctrl.GetImageList(wx.IMAGE_LIST_SMALL))
+        wx.MessageBox(f"重新下载失败：{e}", "错误", wx.OK | wx.ICON_ERROR)
 
 def on_menu_copy_url(event, list_ctrl):
     """复制URL"""
@@ -1558,6 +2132,43 @@ def trigger_new_download(parent=None, prefill_url=None):
     if lst is None or img is None:
         return
     on_new_download(parent, lst, img, prefill_url=prefill_url)
+
+
+def trigger_bt_download(source, save_path=None, parent=None):
+    """外部入口：从文件关联/命令行直接发起 BT 下载。
+
+    source 可为本地 .torrent 路径、磁力链或种子 URL。
+    返回 (成功?, 提示消息)。
+    """
+    if not source:
+        return False, "缺少 BT 来源"
+    if save_path is None or not str(save_path).strip():
+        try:
+            import TorrentDownload as _TD
+            save_path = _TD.app_download_dir()
+        except Exception:
+            save_path = os.path.join(os.path.expanduser("~"), "Downloads")
+    try:
+        import TorrentDownload as _TD
+    except Exception as e:
+        return False, f"BT 引擎不可用：{e}"
+    if parent is None:
+        try:
+            parent = _download_list_ctrl.GetParent()
+        except Exception:
+            parent = wx.GetActiveWindow()
+    try:
+        lst = _download_list_ctrl
+        img = _image_list_ctrl
+    except NameError:
+        lst = None
+        img = None
+    if lst is None or img is None:
+        return False, "下载面板尚未就绪"
+    try:
+        return _start_bt_download(parent, lst, img, source, save_path, _TD)
+    except Exception as e:
+        return False, str(e)
 
 def DownloadUI(parent=None):
   

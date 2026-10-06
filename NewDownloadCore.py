@@ -14,6 +14,8 @@ import zipfile
 import shutil
 import tempfile
 import platform
+import logging
+import subprocess
 from io import BytesIO
 import urllib3
 import ssl
@@ -688,10 +690,19 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             except Exception:
                 pass
 
+        # 清理下载目录与缓存目录中的中间文件，保持目录整洁
+        try:
+            import DownloadCleanup
+            DownloadCleanup.cleanup_download_artifacts(ctx.save_path, ctx.filename)
+            DownloadCleanup.cleanup_stale_progress_files()
+        except Exception:
+            pass
+
         def show_complete_dialog_and_close():
             if ctx._completion_handled:
                 return
             from CompleteReport import show_download_complete_report
+            _notify_download_done(ctx, target_full_path, final_file_size)
             show_download_complete_report(
                 parent=ctx.ui_frame,
                 filename=ctx.filename,
@@ -834,6 +845,32 @@ def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
     ctx.total_downloaded = sum(t.downloaded for t in ctx.chunk_task_list)
 
 # -------------------------- 下载完成弹窗UI --------------------------
+def _open_local_file(path):
+    try:
+        if platform.system() == "Windows":
+            os.startfile(path)
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        logging.warning(f"打开文件失败: {e}")
+
+
+def _notify_download_done(ctx, file_path, file_size):
+    try:
+        from Notifier import Notification
+        size_mb = file_size / 1024 / 1024
+        Notification(
+            app_id="Nodanium",
+            title="下载完成",
+            msg=f"{ctx.filename}\n{size_mb:.2f} MB",
+            duration="long",
+            file_path=file_path,
+            on_click=lambda p=file_path: _open_local_file(p),
+        ).show_async()
+    except Exception as e:
+        logging.warning(f"下载完成通知失败: {e}")
+
+
 class DownloadCompleteDialog(wx.Dialog):
     def __init__(self, ctx: DownloadCtx):
         super().__init__(None, title=f"下载 - {ctx.filename}", size=(500, 400))
@@ -1169,7 +1206,8 @@ class DownloadFrame(wx.Frame):
         grid_w = max(total_cols * self.cell_w, 1)
         grid_h = max(total_rows * self.cell_h, 1)
         
-        self.grid_scroll.SetVirtualSize((grid_w, grid_h))
+        # 虚拟尺寸不得小于客户区，否则 GTK 滚动条分配到负空间
+        self.grid_scroll.SetVirtualSize((max(grid_w, scroll_w), max(grid_h, scroll_h)))
         self.grid_panel.SetMinSize((grid_w, max(grid_h, scroll_h)))
         self.grid_scroll.Layout()
   
