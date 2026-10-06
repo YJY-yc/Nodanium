@@ -469,8 +469,18 @@ class FileSharePanel(wx.Panel):
             
         port = self.port_ctrl.GetValue()
         config['share_path'] = self.folder_path.GetValue()
+      
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                disk_cfg = json.load(f)
+            if not isinstance(disk_cfg, dict):
+                disk_cfg = {}
+        except Exception:
+            disk_cfg = {}
+        disk_cfg.update(config)
+        config.update(disk_cfg)
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
+            json.dump(disk_cfg, f, ensure_ascii=False, indent=4)
         # 创建文件夹======
         try:
             os.makedirs(folder, exist_ok=True)

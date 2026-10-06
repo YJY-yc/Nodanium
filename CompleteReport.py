@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2026 YUJY(YJY-yc)
+# Copyright (c) 2026 YUJY(YJY-yc)
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import wx
@@ -9,10 +9,7 @@ import platform
 from typing import Optional
 from FileIcon import get_file_icon
 class DownloadCompleteReport(wx.Dialog):
-    """
-    下载完成报告窗口 - Ubuntu 优化版
-    使用 XDND 协议实现文件拖拽
-    """
+
     
     def __init__(self, parent: Optional[wx.Window], 
                  filename: str, 
@@ -41,7 +38,7 @@ class DownloadCompleteReport(wx.Dialog):
         self.Centre()
         
     def create_ui(self):
-        """创建UI布局"""
+  
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
     
@@ -72,10 +69,10 @@ class DownloadCompleteReport(wx.Dialog):
         
         content_box.Add(self.thumbnail_panel, flag=wx.ALL, border=10)
         
-        # 文件信息区域
+
         info_box = wx.BoxSizer(wx.VERTICAL)
         
-        # 文件名
+        
         name_box = wx.BoxSizer(wx.HORIZONTAL)
         name_label = wx.StaticText(self, label="文件名:")
         self.name_value = wx.StaticText(self, label=self.filename)
@@ -296,19 +293,19 @@ class DownloadCompleteReport(wx.Dialog):
             wx.MessageBox("文件夹不存在", "错误", wx.OK | wx.ICON_ERROR)
             
     def on_close(self, event):
-        """关闭窗口"""
+   
         self.Close()
 
 
 class FileDropTarget(wx.DropTarget):
-    """文件拖放目标处理"""
+
     
     def __init__(self, window):
         super().__init__()
         self.window = window
         
     def OnDropFiles(self, x, y, filenames):
-        """处理拖放到窗口的文件"""
+     
         if len(filenames) == 0:
             return False
             
@@ -333,13 +330,13 @@ class FileDropTarget(wx.DropTarget):
         return True
 
 def show_download_complete_report(parent, filename, save_path, file_size, time_cost, average_speed, speed_unit="MB/s"):
-    """显示下载完成报告窗口"""
+
     dlg = DownloadCompleteReport(parent, filename, save_path, file_size, time_cost, average_speed, speed_unit)
     dlg.ShowModal()
     dlg.Destroy()
 
 
-# 测试入口
+
 
 if __name__ == "__main__":
     app = wx.App(False)

@@ -5,7 +5,7 @@ import wx
 import socket
 import threading
 import subprocess
-from winotify import Notification
+from Notifier import Notification
 
 toast = Notification(
     app_id="内网聊天",

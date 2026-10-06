@@ -19,11 +19,11 @@ def get_file_icon(file_path, size=32):
     """获取系统文件管理器显示的图标（跨平台）"""
     icon_size = (size, size)
     
-    # 标准化路径
+
     if file_path:
         file_path = os.path.normpath(file_path)
     
-    # 根据平台获取系统图标
+   
     sys_type = platform.system()
     
     if sys_type == "Windows":
@@ -35,18 +35,18 @@ def get_file_icon(file_path, size=32):
         if result is not None:
             return result
     
-    # 如果系统图标获取失败，使用备用方案
+
     if sys_type == "Windows":
         logging.warning(
             f"Windows系统图标获取失败，已回退到自绘图标: {file_path}"
         )
     return get_fallback_icon(file_path, size)
 
-# 适合生成缩略图的图片扩展名
+
 THUMBNAIL_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.ico', '.tif', '.tiff'}
 
 
-# Windows SHFILEINFOW 结构（模块级定义，避免重复定义）
+
 class _SHFILEINFOW(ctypes.Structure):
     _fields_ = [
         ("hIcon", ctypes.c_void_p),
@@ -69,13 +69,13 @@ def _get_shgetfileinfo():
         import ctypes
         shell32 = ctypes.windll.shell32
         shell32.SHGetFileInfoW.argtypes = [
-            ctypes.c_wchar_p,        # pszPath
-            ctypes.c_ulong,          # dwFileAttributes
-            ctypes.POINTER(_SHFILEINFOW),  # psfi
-            ctypes.c_uint,           # cbFileInfo
-            ctypes.c_uint,           # uFlags
+            ctypes.c_wchar_p,       
+            ctypes.c_ulong,          
+            ctypes.POINTER(_SHFILEINFOW), 
+            ctypes.c_uint,           
+            ctypes.c_uint,           
         ]
-        shell32.SHGetFileInfoW.restype = ctypes.c_size_t  # DWORD_PTR
+        shell32.SHGetFileInfoW.restype = ctypes.c_size_t 
         _WIN_SHELL32_FUNCS["SHGetFileInfoW"] = shell32.SHGetFileInfoW
         if logging.getLogger().level > logging.INFO:
             logging.warning(f"FileIcon: SHGetFileInfoW argtypes 已配置: {shell32.SHGetFileInfoW}")
@@ -138,7 +138,7 @@ def _hicon_to_bitmap(hicon, size):
             return None
         hbm = ic.hbmColor
         if not hbm:
-            # 仅含掩码（老式单色图标），无法直接读色，返回 None 走 fallback
+        
             return None
 
         gdi32.GetObjectA.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
@@ -153,10 +153,10 @@ def _hicon_to_bitmap(hicon, size):
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.bmiHeader.biWidth = w
-        bmi.bmiHeader.biHeight = -h  # 负值 = 自顶向下，与 wx.Image 行序一致
+        bmi.bmiHeader.biHeight = -h 
         bmi.bmiHeader.biPlanes = 1
         bmi.bmiHeader.biBitCount = 32
-        bmi.bmiHeader.biCompression = 0  # BI_RGB
+        bmi.bmiHeader.biCompression = 0  
 
         raw = ctypes.create_string_buffer(w * h * 4)
         gdi32.GetDIBits.argtypes = [
@@ -168,14 +168,14 @@ def _hicon_to_bitmap(hicon, size):
         try:
             nlines = gdi32.GetDIBits(
                 hdc, ctypes.c_void_p(hbm), 0, h, ctypes.byref(raw),
-                ctypes.byref(bmi), 0,  # DIB_RGB_COLORS
+                ctypes.byref(bmi), 0,  
             )
         finally:
             user32.ReleaseDC(0, hdc)
         if nlines <= 0:
             return None
 
-        # BGRA -> wx.Image(RGB + Alpha)
+  
         px = raw.raw
         rgb = bytearray(w * h * 3)
         alpha = bytearray(w * h)
@@ -191,7 +191,7 @@ def _hicon_to_bitmap(hicon, size):
                 any_alpha = True
         img = wx.Image(w, h)
         img.SetData(bytes(rgb))
-        # 仅当图标真实含 alpha 通道时才设置，否则保持不透明，避免整幅透明导致的“消失”
+ 
         if any_alpha:
             try:
                 img.SetAlpha(bytes(alpha))
@@ -208,7 +208,7 @@ def _hicon_to_bitmap(hicon, size):
         logging.debug(f"HICON 读像素失败: {e}")
         return None
     finally:
-        # 释放 GetIconInfo 返回的位图与 SHGetFileInfoW 的图标句柄
+       
         try:
             if ic.hbmColor:
                 gdi32.DeleteObject(ic.hbmColor)
@@ -237,19 +237,19 @@ def get_windows_thumbnail(file_path, size=32):
                     return None
                 img = img.resize((size, size), Image.Resampling.LANCZOS)
                 rgbt = img.convert('RGB').tobytes()
-                # 将像素数据交给 wx，避免重复编码解码
+             
                 wx_img = wx.Image(size, size)
                 wx_img.SetData(rgbt)
                 if 'A' in img.getbands():
                     rgba = img.convert('RGBA').tobytes()
-                    alpha = bytes(rgba[3::4])  # 仅提取 alpha 通道
+                    alpha = bytes(rgba[3::4]) 
                     try:
                         wx_img.SetAlpha(alpha)
                     except Exception:
                         pass
                 return wx.Bitmap(wx_img)
         else:
-            # 无 PIL，用 wx 直接加载
+         
             wx_img = wx.Image(file_path)
             if not wx_img.IsOk():
                 return None
@@ -261,9 +261,7 @@ def get_windows_thumbnail(file_path, size=32):
 
 
 def _get_shell_thumbnail(file_path, size):
-    """通过 IShellItemImageFactory 获取资源管理器中显示的真缩略图（图片/视频/PDF 等）"""
-    # 使用标准 COM API：SHCreateItemFromParsingName -> IShellItemImageFactory::GetImage
-    # 与“文件资源管理器”使用同一套缩略图/图标解析机制
+ 
     import ctypes
 
     class GUID(ctypes.Structure):
@@ -334,11 +332,11 @@ def _get_shell_thumbnail(file_path, size):
             try:
                 return wx.Bitmap.FromHBitmap(hbitmap.value)
             finally:
-                # 释放 GDI HBITMAP
+            
                 gdi32 = ctypes.windll.gdi32
                 gdi32.DeleteObject(hbitmap.value)
         finally:
-            # 释放 IShellItemImageFactory 对象
+        
             release_cast(p_item)
     except Exception as e:
         logging.warning(f"IShellItemImageFactory 获取缩略图异常: {type(e).__name__}: {e}")
@@ -346,7 +344,7 @@ def _get_shell_thumbnail(file_path, size):
 
 
 def _get_dpi_scale():
-    """获取当前显示器 DPI 缩放比例（1.0 = 100%）"""
+ 
     try:
         import ctypes
         shcore = ctypes.windll.shcore
@@ -360,7 +358,7 @@ def _get_dpi_scale():
         user32 = ctypes.windll.user32
         hdc = user32.GetDC(0)
         try:
-            dpi = user32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+            dpi = user32.GetDeviceCaps(hdc, 88) 
             return dpi / 96.0
         finally:
             user32.ReleaseDC(0, hdc)
@@ -369,11 +367,9 @@ def _get_dpi_scale():
 
 
 def get_windows_icon(file_path, size=32):
-    """获取与 Windows 文件资源管理器一致的图标。
-    通过 SHGetFileInfoW（系统关联图标，带 DPI 适配）为主路径；
-    文件存在时额外尝试 IShellItemImageFactory 提取真缩略图。"""
+
     try:
-        # 确保路径是绝对路径
+     
         if not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
 
@@ -388,19 +384,16 @@ def get_windows_icon(file_path, size=32):
 
         shfi = _SHFILEINFOW()
 
-        # 文件不存在时，用扩展名解析关联图标（下载中的文件也能显示对应图标）
         file_exists = os.path.exists(file_path)
-        file_attr = 0x80  # FILE_ATTRIBUTE_NORMAL
+        file_attr = 0x80 
         flags = SHGFI_ICON | SHGFI_LARGEICON
         if file_exists:
             if os.path.isdir(file_path):
-                file_attr = 0x10  # FILE_ATTRIBUTE_DIRECTORY
+                file_attr = 0x10  
         else:
             flags |= SHGFI_USEFILEATTRIBUTES
 
-        # 主路径：请求系统关联图标。
-        # 注意：返回给调用方的位图必须恒为逻辑 size×size（如 32），不能按 DPI 放大，
-        # 否则塞进固定尺寸的 ImageList 会被裁剪（图标看起来不完整）。
+    
         scale = _get_dpi_scale()
         logging.warning(f"FileIcon: 路径={file_path} 存在={file_exists} 缩放={scale:.2f} 目标size={size}")
         if shgetfileinfo is not None:
@@ -413,12 +406,12 @@ def get_windows_icon(file_path, size=32):
             )
             logging.warning(f"FileIcon: SHGetFileInfoW ret={ret} hIcon={shfi.hIcon if hasattr(shfi, 'hIcon') else '??'} iIcon={shfi.iIcon}")
             if ret and shfi.hIcon:
-                # 用 size（非 pixel_size）转换，保证返回位图尺寸与显示层一致，避免裁剪
+            
                 bmp = _hicon_to_bitmap(shfi.hIcon, size)
                 if bmp is not None:
                     return bmp
 
-        # 缩略图增强：文件存在时，用 shell 机制提取真缩略图（图片/视频/PDF）
+ 
         if file_exists:
             thumb = _get_shell_thumbnail(file_path, size)
             if thumb is not None and thumb.IsOk():
@@ -427,7 +420,7 @@ def get_windows_icon(file_path, size=32):
                 img = thumb.ConvertToImage()
                 return wx.Bitmap(img.Scale(size, size, wx.IMAGE_QUALITY_HIGH))
             logging.warning(f"FileIcon: shell缩略图失败或不可用: {file_path}")
-            # shell 缩略图失败时，图片用内建缩略图兜底
+
             ext = os.path.splitext(file_path)[1].lower()
             if ext in THUMBNAIL_EXTENSIONS:
                 thumb = get_windows_thumbnail(file_path, size)
@@ -441,22 +434,22 @@ def get_windows_icon(file_path, size=32):
         return None
 
 def get_linux_icon(file_path, size=32):
-    """获取Linux系统图标（使用Gio/Gtk）"""
+    """获取Linux系统图标"""
     try:
         import gi
         gi.require_version('Gio', '2.0')
         gi.require_version('Gtk', '3.0')
         from gi.repository import Gio, Gtk
         
-        # 确保路径是绝对路径
+   
         if not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         
         gfile = Gio.File.new_for_path(file_path)
         
-        # 检查文件是否存在
+ 
         if gfile.query_exists(None):
-            # 文件存在，获取真实图标
+         
             if gfile.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.DIRECTORY:
                 file_info = gfile.query_info(
                     'standard::icon', 
@@ -470,7 +463,7 @@ def get_linux_icon(file_path, size=32):
                     None
                 )
         else:
-            # 文件不存在，尝试从扩展名获取图标
+       
             content_type = Gio.content_type_guess(file_path, None)[0]
             gicon = Gio.content_type_get_icon(content_type)
             if gicon:
@@ -487,7 +480,7 @@ def get_linux_icon(file_path, size=32):
         if not gicon:
             return None
         
-        # 获取主题图标
+      
         icon_theme = Gtk.IconTheme.get_default()
         icon_info = icon_theme.lookup_by_gicon(gicon, size, 0)
         
@@ -506,7 +499,7 @@ def get_linux_icon(file_path, size=32):
         return None
 
 def load_icon_from_path(icon_path, size):
-    """从图标文件加载并转换为wx.Bitmap"""
+  
     try:
         if PIL_AVAILABLE:
             img = Image.open(icon_path)
@@ -523,7 +516,7 @@ def load_icon_from_path(icon_path, size):
             wx_img.LoadFile(img_bytes, wx.BITMAP_TYPE_PNG)
             return wx.Bitmap(wx_img)
         else:
-            # 没有PIL，尝试用wx直接加载
+          
             wx_img = wx.Image(icon_path)
             if wx_img.IsOk():
                 wx_img = wx_img.Scale(size, size, wx.IMAGE_QUALITY_HIGH)
@@ -536,37 +529,37 @@ def load_icon_from_path(icon_path, size):
 def get_fallback_icon(file_path, size=32):
     """备用图标方案"""
     try:
-        # 检查是否是目录
+      
         if file_path and (os.path.isdir(file_path) or file_path.endswith(('/','\\'))):
             return draw_folder_icon(size)
         
-        # 根据扩展名返回不同颜色的图标
+        
         ext = ''
         if file_path:
             ext = os.path.splitext(file_path)[1].lower()
         
         color_map = {
-            '.txt': (100, 149, 237),  # 蓝色
-            '.pdf': (220, 53, 69),     # 红色
-            '.doc': (0, 112, 192),     # 深蓝
+            '.txt': (100, 149, 237), 
+            '.pdf': (220, 53, 69),    
+            '.doc': (0, 112, 192),    
             '.docx': (0, 112, 192),
-            '.xls': (34, 197, 94),     # 绿色
+            '.xls': (34, 197, 94),    
             '.xlsx': (34, 197, 94),
-            '.ppt': (251, 146, 60),    # 橙色
+            '.ppt': (251, 146, 60),  
             '.pptx': (251, 146, 60),
-            '.html': (251, 191, 36),   # 黄色
-            '.zip': (168, 85, 247),    # 紫色
+            '.html': (251, 191, 36),   
+            '.zip': (168, 85, 247),   
             '.rar': (168, 85, 247),
             '.7z': (168, 85, 247),
-            '.jpg': (6, 182, 212),     # 青色
+            '.jpg': (6, 182, 212),    
             '.jpeg': (6, 182, 212),
             '.png': (6, 182, 212),
             '.gif': (6, 182, 212),
-            '.mp3': (236, 72, 153),    # 粉色
+            '.mp3': (236, 72, 153),   
             '.wav': (236, 72, 153),
-            '.mp4': (139, 92, 246),    # 紫色
+            '.mp4': (139, 92, 246),  
             '.avi': (139, 92, 246),
-            '.exe': (220, 53, 69),     # 红色
+            '.exe': (220, 53, 69),    
         }
         
         color = color_map.get(ext, (160, 160, 160))
@@ -576,14 +569,14 @@ def get_fallback_icon(file_path, size=32):
         return get_default_bitmap(size)
 
 def draw_folder_icon(size=32):
-    """绘制文件夹图标"""
+    
     bmp = wx.Bitmap(size, size)
     dc = wx.MemoryDC()
     dc.SelectObject(bmp)
     dc.SetBackground(wx.Brush(wx.WHITE))
     dc.Clear()
     
-    # 绘制文件夹
+
     dc.SetPen(wx.Pen(wx.BLACK, 1))
     dc.SetBrush(wx.Brush(wx.Colour(251, 191, 36)))
     dc.DrawRectangle(4, 10, size-8, size-14)
@@ -593,7 +586,7 @@ def draw_folder_icon(size=32):
     return bmp
 
 def draw_file_icon(size, color):
-    """绘制文件图标"""
+
     bmp = wx.Bitmap(size, size)
     dc = wx.MemoryDC()
     dc.SelectObject(bmp)
@@ -617,7 +610,7 @@ def draw_file_icon(size, color):
     return bmp
 
 def get_default_bitmap(size):
-    """默认图标"""
+
     bmp = wx.Bitmap(size, size)
     dc = wx.MemoryDC()
     dc.SelectObject(bmp)

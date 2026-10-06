@@ -39,13 +39,9 @@ def generate_linux_default_hosts(hostname: str = "") -> str:
 
 
 def write_hosts_with_privileges(content: str) -> None:
-    """跨平台安全写入 hosts 文件。
-    - 有权限直接写
-    - 无权限时自动用 pkexec / sudo 提权写入
-    返回 None；失败抛异常。
-    """
+
     data = content.encode("utf-8")
-    # 1) 已有写入权限则直接写
+  
     try:
         if os.access(HOSTS_PATH, os.W_OK):
             with open(HOSTS_PATH, "r+b") as f:
@@ -56,17 +52,17 @@ def write_hosts_with_privileges(content: str) -> None:
     except Exception:
         pass
 
-    # 2) 自动提权
+
     os.makedirs(os.path.dirname(HOSTS_PATH), exist_ok=True)
     tmp_file = HOSTS_PATH + ".nodanium.tmp"
     with open(tmp_file, "wb") as f:
         f.write(data)
 
     if sys_type == "Windows":
-        # Windows 上提权命令较特殊，直接尝试让调用方负责提权处理
+
         raise PermissionError("需要管理员权限才能修改 hosts 文件")
 
-    # Linux: 优先 pkexec (polkit)，回退 sudo
+
     for tool in ("pkexec", "sudo", "su"):
         if tool == "pkexec":
             candidate = ["pkexec", "sh", "-c", "cat '%s' > '%s' && rm -f '%s'" % (tmp_file, HOSTS_PATH, tmp_file)]
@@ -86,7 +82,7 @@ def write_hosts_with_privileges(content: str) -> None:
         except Exception:
             continue
 
-    # 全部失败：清理临时文件并抛错
+
     try:
         if os.path.exists(tmp_file):
             os.remove(tmp_file)
@@ -94,7 +90,7 @@ def write_hosts_with_privileges(content: str) -> None:
         pass
     raise PermissionError("无法获得写 /etc/hosts 的权限（尝试了 pkexec/sudo 仍失败）")
 
-# 跨平台配置
+
 sys_type = platform.system()
 if sys_type == "Windows":
     HOSTS_PATH = r'C:\Windows\System32\drivers\etc\hosts'
@@ -106,7 +102,7 @@ def flush_dns_cache():
     if sys_type == "Windows":
         subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
     elif sys_type == "Linux":
-        # Ubuntu 24.04+ 使用 resolvectl（systemd-resolve 已移除）；依次尝试多种方式
+  
         attempts = [
             ['resolvectl', 'flush-caches'],
             ['systemd-resolve', '--flush-caches'],
@@ -128,7 +124,7 @@ def flush_dns_cache():
                 pass
 
 def get_dns_cache_windows():
-    """获取Windows DNS缓存（Windows专用）"""
+
     try:
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -471,7 +467,7 @@ def init_dns_tab(p):
             dns_list.SetItem(idx, 1, record.get('data', ''))
             dns_list.SetItem(idx, 2, record.get('ttl', ''))
     def flush_dns_cache(event=None):
-        """清空系统 DNS 缓存按钮处理器（跨平台，调用模块级实现）"""
+
         try:
             import DNSShower as _dns
             _dns.flush_dns_cache()
