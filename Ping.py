@@ -7,6 +7,8 @@ import threading
 import sys
 import psutil
 import os
+import ProcUtil
+
 def PingPanel(parent):
     panel = parent
     ping_process = None
@@ -117,7 +119,7 @@ def PingPanel(parent):
                 ping_command = ['ping', '-n', str(ping_count), '-l', str(packet_size), target]
             else:
                 ping_command = ['ping', '-c', str(ping_count), '-s', str(packet_size - 8), target]  # Linux 减去 8 字节头部
-            ping_process = subprocess.Popen(ping_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ping_process = ProcUtil.popen(ping_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             while not stop_event.is_set():
                 output = ping_process.stdout.readline()
                 if output == '' and ping_process.poll() is not None:

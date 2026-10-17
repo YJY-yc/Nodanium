@@ -9,6 +9,7 @@ import platform
 import subprocess
 import glob
 import logging
+import ProcUtil
 
 config = {
     'font_size': 17,
@@ -889,9 +890,9 @@ def options(event):
         install_btn.SetLabel("正在安装...")
         try:
             if platform.system() == "Windows":
-                subprocess.Popen([install_script], cwd=os.path.dirname(install_script))
+                ProcUtil.popen([install_script], cwd=os.path.dirname(install_script))
             else:
-                subprocess.Popen(["bash", install_script], cwd=os.path.dirname(install_script))
+                ProcUtil.popen(["bash", install_script], cwd=os.path.dirname(install_script))
         except Exception as e:
             wx.MessageBox("安装脚本启动失败：\n" + str(e), "错误", wx.OK | wx.ICON_ERROR)
         finally:

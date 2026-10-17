@@ -8,6 +8,7 @@ import platform
 import subprocess
 import tempfile
 import threading
+import ProcUtil
 
 SYS = platform.system()
 
@@ -212,7 +213,7 @@ class Notification:
     def _show_fallback(self):
         if SYS == "Windows":
             try:
-                subprocess.run(
+                ProcUtil.run(
                     ["powershell", "-NoProfile", "-Command",
                      "New-BurntToastNotification -Text @('{}','{}')".format(
                          self.title.replace("'", "''"), self.msg.replace("'", "''"))],

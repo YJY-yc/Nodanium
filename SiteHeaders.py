@@ -13,7 +13,18 @@ CONFIG_NAME = "site_headers.json"
 LOG_NAME = "site_headers.log"
 
 DEFAULT_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
+                      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+DEFAULT_HEADERS = [
+    {"key": "User-Agent", "value": DEFAULT_USER_AGENT},
+    {"key": "Accept", "value": "*/*"},
+    {"key": "Accept-Language", "value": "zh-CN,zh;q=0.9,en;q=0.8"},
+    {"key": "Accept-Encoding", "value": "identity"},
+    {"key": "Connection", "value": "keep-alive"},
+    {"key": "Sec-Fetch-Dest", "value": "empty"},
+    {"key": "Sec-Fetch-Mode", "value": "cors"},
+    {"key": "Sec-Fetch-Site", "value": "cross-site"},
+]
 
 
 def get_data_folder():
@@ -28,7 +39,7 @@ def default_data():
     """返回初始化的默认数据结构"""
     return {
         "default_enabled": True,
-        "default_headers": [{"key": "User-Agent", "value": DEFAULT_USER_AGENT}],
+        "default_headers": DEFAULT_HEADERS,
         "default_cookie": "",
         "rules": [],
     }

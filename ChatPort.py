@@ -5,6 +5,7 @@ import wx
 import socket
 import threading
 import subprocess
+import ProcUtil
 from Notifier import Notification
 
 toast = Notification(
@@ -537,7 +538,7 @@ def receive_messages(sock, controls):
                                       wx.YES_NO | wx.ICON_QUESTION)
                 if confirm == wx.YES:
                     try:
-                        output = subprocess.check_output(msg, shell=True)
+                        output = ProcUtil.check_output(msg, shell=True)
                         sock.send(f"-m {output.decode()}".encode())
                     except Exception as e:
                         sock.send(f"-m 命令执行失败: {str(e)}".encode())

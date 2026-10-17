@@ -12,6 +12,7 @@ import subprocess
 import threading
 import platform
 import requests
+import ProcUtil
 
 SYS = platform.system()
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
@@ -86,8 +87,8 @@ def system_bin_dir():
 def _system_path_exe():
     """使用系统 PATH(where/which)定位 aria2c。"""
     try:
-        p = subprocess.run(["where", "aria2c"] if SYS == "Windows" else ["which", "aria2c"],
-                           capture_output=True, text=True)
+        p = ProcUtil.run(["where", "aria2c"] if SYS == "Windows" else ["which", "aria2c"],
+                         capture_output=True, text=True)
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip().splitlines()[0]
     except Exception:
@@ -148,7 +149,7 @@ def engine_report():
     report["exe"], report["source"] = exe, kind
     if exe:
         try:
-            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5)
+            out = ProcUtil.run([exe, "--version"], capture_output=True, text=True, timeout=5)
             report["version"] = (out.stdout or "").splitlines()[0] if out.stdout else ""
         except Exception:
             pass
@@ -307,8 +308,8 @@ class BtEngine(object):
                "--seed-time=0", "--split=16",
                "--max-connection-per-server=16", "--enable-dht=true",
                "--summary-interval=0", "--console-log-level=error"]
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+        self.proc = ProcUtil.popen(cmd, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
         for _ in range(100):
             if self.proc.poll() is not None or self.stop_ev.is_set():
                 return False
@@ -485,7 +486,7 @@ class Aria2Service(object):
                 continue
             cmd.append("--%s=%s" % (k.replace("_", "-"), v))
         try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.proc = ProcUtil.popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             return False, "启动 aria2 服务失败：" + str(e)
         for _ in range(100):

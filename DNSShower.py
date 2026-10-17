@@ -7,6 +7,7 @@ import os
 import socket
 import dns.resolver
 import platform
+import ProcUtil
 dns_list = None
 panel = None
 import time
@@ -100,7 +101,7 @@ else:
 def flush_dns_cache():
     """跨平台刷新DNS缓存"""
     if sys_type == "Windows":
-        subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
+        ProcUtil.run(['ipconfig', '/flushdns'], capture_output=True)
     elif sys_type == "Linux":
   
         attempts = [
@@ -111,7 +112,7 @@ def flush_dns_cache():
         done = False
         for cmd in attempts:
             try:
-                r = subprocess.run(cmd, capture_output=True)
+                r = ProcUtil.run(cmd, capture_output=True)
                 if r.returncode == 0:
                     done = True
                     break
@@ -119,21 +120,17 @@ def flush_dns_cache():
                 continue
         if not done:
             try:
-                subprocess.run(['nscd', '-i', 'hosts'], capture_output=True)
+                ProcUtil.run(['nscd', '-i', 'hosts'], capture_output=True)
             except FileNotFoundError:
                 pass
 
 def get_dns_cache_windows():
 
     try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
-        result = subprocess.run(
+        result = ProcUtil.run(
             ['ipconfig', '/displaydns'],
             capture_output=True, 
-            text=True,
-            startupinfo=startupinfo
+            text=True
         )
         
         if result.returncode != 0:

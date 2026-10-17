@@ -30,12 +30,20 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 DEFAULT_TIMEOUT = 240
 
+CONNECT_TIMEOUT = 10
+GLOBAL_STALL_TIMEOUT = 120
+
 READ_STALL_TIMEOUT = 30
 default_retry = 100  #重试次数
 DEFAULT_RETRY = default_retry
 GRID_CELL_SIZE = 12
 NDF_SUFFIX = ".ndf"
 PROGRESS_JSON_NAME = "download_progress.json"
+
+
+class RangeUnsupported(Exception):
+    """服务器不支持分片 Range 请求（返回 200 而非 206）"""
+    pass
 
 
 def get_download_process_dir():
@@ -106,6 +114,198 @@ class DownloadCtx:
     speed_limit_bps: float = 0.0       # 全局最大下载速度（字节/秒），0=不限速
     rate_lock: Optional[threading.Lock] = None
     rate_last_refill: float = 0.0
+    # -------------------------- curl 兜底后端 --------------------------
+    use_curl: bool = False             # 改用 curl 子进程下载（绕 TLS 指纹封锁）
+    active_curl_procs: Optional[Any] = None
+
+# -------------------------- curl 兜底后端（绕 TLS 指纹封锁） --------------------------
+CURL_PROBE_TIMEOUT = 8
+PROBE_RETRY_TIMES = 3
+PROBE_RETRY_DELAY = 2
+PROBE_RETRY_STATUS = (403, 429, 503)
+CURL_SPEED_TIME = 30
+CURL_SPEED_LIMIT = 1
+CURL_STDERR_LIMIT = 4096
+
+
+def find_curl_binary() -> str:
+    try:
+        return shutil.which("curl") or ""
+    except Exception:
+        return ""
+
+
+CURL_BINARY = find_curl_binary()
+
+
+def curl_available() -> bool:
+    return bool(CURL_BINARY)
+
+
+def _curl_headers_args(headers: Dict[str, str], extra: Optional[Dict[str, str]] = None) -> List[str]:
+    args: List[str] = []
+    merged = dict(headers or {})
+    if extra:
+        merged.update(extra)
+    for k, v in merged.items():
+        if k is None or v is None:
+            continue
+        args += ["-H", f"{k}: {v}"]
+    return args
+
+
+def _parse_content_range_total(header_blob: str) -> int:
+    for line in header_blob.splitlines():
+        if line.lower().startswith("content-range:"):
+            value = line.split(":", 1)[1].strip()
+            if "/" in value:
+                total = value.rsplit("/", 1)[1].strip()
+                if total.isdigit():
+                    return int(total)
+    return 0
+
+
+def _parse_content_length(header_blob: str) -> int:
+    total = 0
+    for line in header_blob.splitlines():
+        if line.lower().startswith("content-length:"):
+            value = line.split(":", 1)[1].strip()
+            if value.isdigit():
+                total = int(value)
+    return total
+
+
+def curl_probe(url: str, headers: Dict[str, str], disable_ssl: bool = False,
+               timeout: int = CURL_PROBE_TIMEOUT) -> Dict[str, Any]:
+    """用 curl 请求首字节，解析状态码 / 最终 URL / 总大小。"""
+    result: Dict[str, Any] = {"ok": False, "status": 0, "final_url": "", "total_size": 0, "error": ""}
+    if not curl_available():
+        result["error"] = "curl 不可用"
+        return result
+
+    marker = "__ND_CURL__"
+    write_out = marker + "%{http_code}|%{url_effective}|%{size_download}"
+    args = [CURL_BINARY, "-s", "-L", "-o", os.devnull,
+            "--connect-timeout", str(min(CONNECT_TIMEOUT, timeout)),
+            "--max-time", str(timeout), "-r", "0-0", "-D", "-",
+            "-w", write_out]
+    if disable_ssl:
+        args.append("-k")
+    args += _curl_headers_args(headers)
+    args.append(url)
+
+    try:
+        proc = subprocess.run(args, capture_output=True, timeout=timeout + 5)
+    except subprocess.TimeoutExpired:
+        result["error"] = "curl 探测超时"
+        return result
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+    out = proc.stdout.decode("utf-8", "replace")
+    err = proc.stderr.decode("utf-8", "replace")
+    parts_split = out.rsplit(marker, 1)
+    meta = parts_split[-1] if len(parts_split) == 2 else ""
+    header_blob = parts_split[0] if len(parts_split) == 2 else out
+
+    code = 0
+    final_url = ""
+    if meta:
+        fields = meta.split("|")
+        try:
+            code = int(fields[0])
+        except Exception:
+            code = 0
+        if len(fields) > 1:
+            final_url = fields[1].strip()
+
+    if code == 0:
+        result["error"] = (err.strip() or "curl 未返回状态码")[:300]
+        return result
+
+    result["status"] = code
+    result["final_url"] = final_url
+    result["ok"] = code < 400
+    result["total_size"] = _parse_content_range_total(header_blob)
+    if not result["total_size"] and code == 200:
+        result["total_size"] = _parse_content_length(header_blob)
+    return result
+
+
+def _build_curl_base(ctx: DownloadCtx) -> List[str]:
+    args = [CURL_BINARY, "-s", "-L", "-f",
+            "--connect-timeout", str(CONNECT_TIMEOUT),
+            "--speed-time", str(CURL_SPEED_TIME),
+            "--speed-limit", str(CURL_SPEED_LIMIT),
+            "--no-buffer"]
+    if ctx.disable_ssl:
+        args.append("-k")
+    return args
+
+
+def _terminate_curl(proc) -> None:
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except Exception:
+        pass
+
+
+def kill_active_curls(ctx: DownloadCtx) -> None:
+    procs = getattr(ctx, 'active_curl_procs', None)
+    if not procs:
+        return
+    for proc in list(procs):
+        _terminate_curl(proc)
+
+
+def iter_curl_chunk(ctx: DownloadCtx, start: int, end: int):
+    """curl 子进程流式读取 [start, end] 区间，产出 8KB 数据块。"""
+    if not curl_available():
+        raise RuntimeError("curl 不可用，无法使用兜底下载")
+
+    args = _build_curl_base(ctx)
+    args += _curl_headers_args(ctx.headers, {"Range": f"bytes={start}-{end}"})
+    args.append(ctx.url)
+
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    if ctx.active_curl_procs is not None:
+        ctx.active_curl_procs.add(proc)
+    try:
+        yielded = False
+        while not ctx.stop_event.is_set():
+            block = proc.stdout.read(8192)
+            if not block:
+                break
+            yielded = True
+            yield block
+        if ctx.stop_event.is_set():
+            _terminate_curl(proc)
+            return
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _terminate_curl(proc)
+        if proc.returncode and not yielded:
+            stderr_text = proc.stderr.read(CURL_STDERR_LIMIT).decode("utf-8", "replace").strip()
+            raise RuntimeError(f"curl 退出码 {proc.returncode}: {stderr_text[:200]}")
+    finally:
+        if ctx.active_curl_procs is not None:
+            ctx.active_curl_procs.discard(proc)
+        try:
+            if proc.poll() is None:
+                _terminate_curl(proc)
+        except Exception:
+            pass
+        try:
+            proc.stdout.close()
+            proc.stderr.close()
+        except Exception:
+            pass
 
 # --------------------------  --------------------------
 
@@ -166,9 +366,7 @@ def pre_allocate_file(file_path: str, total_size: int, resume: bool = False):
 
 def chunk_seek_write(file_obj, offset: int, data: bytes, do_fsync: bool = False) -> bool:
     """文件指定偏移写入。
-    调用方需持有 ctx.file_write_lock 以保证同一文件对象上 seek+write 的原子性（避免并发写坏偏移）。
-    do_fsync 为 True 时强制刷盘（用于暂停/完成等关键节点），批量缓冲刷新仅 flush 不落盘，
-    避免 os.fsync 在慢盘上成为吞吐瓶颈导致速度骤降。
+    
     """
     if not file_obj or len(data) == 0:
         return False
@@ -184,8 +382,7 @@ def chunk_seek_write(file_obj, offset: int, data: bytes, do_fsync: bool = False)
 
 def flush_single_chunk_buffer(ctx: DownloadCtx, task: ChunkTask, do_fsync: bool = False) -> int:
     """刷新单个分片私有缓冲。
-    同一文件对象由多线程 seek+write，因此整个 读缓冲+seek+write+flush 必须在全局写锁内执行，
-    否则多个分片 seek/write 交错会把数据写到错误偏移，导致该分片永远下不完（表现为 0.xB/s/假死）。
+ 
     """
     if task.task_buffer is None or task.task_buffer.getbuffer().nbytes == 0:
         return 0
@@ -299,24 +496,23 @@ def split_file_chunks(total_size: int, jobs: int, single_chunk_bytes: int) -> Li
         offset = end + 1
         idx += 1
 
-    max_try = 10
-    try_cnt = 0
-    while len(chunk_list) < jobs and try_cnt < max_try:
-        try_cnt += 1
-        real_chunk_size *= 2
-        chunk_list.clear()
-        offset = 0
-        idx = 0
-        while offset < total_size:
-            end = min(offset + real_chunk_size - 1, total_size - 1)
-            chunk_list.append(ChunkTask(
-                chunk_idx=idx,
-                start_byte=offset,
-                end_byte=end,
-                chunk_lock=threading.Lock()
-            ))
-            offset = end + 1
-            idx += 1
+    if len(chunk_list) < jobs:
+        want = min(jobs, max(1, total_size // MIN_CHUNK_BYTE))
+        base = total_size // want
+        if base > real_chunk_size:
+            chunk_list.clear()
+            offset = 0
+            idx = 0
+            while offset < total_size:
+                end = min(offset + base - 1, total_size - 1)
+                chunk_list.append(ChunkTask(
+                    chunk_idx=idx,
+                    start_byte=offset,
+                    end_byte=end,
+                    chunk_lock=threading.Lock()
+                ))
+                offset = end + 1
+                idx += 1
     return chunk_list
 
 # -------------------------- 网络分片--------------------------
@@ -344,6 +540,22 @@ def rate_limit_wait(ctx: DownloadCtx, bytes_consumed: int) -> None:
             ctx.rate_last_refill = finish
     if wait_sec > 0:
         time.sleep(wait_sec)
+
+
+def _iter_chunk_via_requests(ctx: DownloadCtx, session, task: ChunkTask,
+                             current_offset: int, read_to: int):
+    """requests 后端：产出分片数据块。服务器忽略 Range 时抛 RangeUnsupported。"""
+    range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
+    req_headers = {**ctx.headers, **range_header}
+    with session.get(ctx.url, headers=req_headers, stream=True,
+                     timeout=(CONNECT_TIMEOUT, read_to), verify=(not ctx.disable_ssl)) as resp:
+        resp.raise_for_status()
+        if resp.status_code == 200 and task.downloaded == 0 and task.start_byte > 0:
+            raise RangeUnsupported("服务器忽略 Range 请求（返回 200），不支持多线程分片下载")
+        for raw_data in resp.iter_content(chunk_size=8192):
+            if not raw_data:
+                continue
+            yield raw_data
 
 
 def single_chunk_worker(ctx: DownloadCtx) -> None:
@@ -379,48 +591,52 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                 break
             offset_before = current_offset
             try:
-                range_header = {"Range": f"bytes={current_offset}-{task.end_byte}"}
-                req_headers = {**ctx.headers, **range_header}
-     
                 read_to = max(5, min(int(DEFAULT_TIMEOUT), int(getattr(ctx, 'read_stall_timeout', READ_STALL_TIMEOUT))))
-                with session.get(ctx.url, headers=req_headers, stream=True,
-                                 timeout=(DEFAULT_TIMEOUT, read_to), verify=(not ctx.disable_ssl)) as resp:
-                    resp.raise_for_status()
+                if ctx.use_curl:
+                    source = iter_curl_chunk(ctx, current_offset, task.end_byte)
+                else:
+                    source = _iter_chunk_via_requests(ctx, session, task, current_offset, read_to)
+                last_data_ts = time.time()
+                got_data = False
+                for raw_data in source:
+                    if ctx.stop_event.is_set():
+                        flush_single_chunk_buffer(ctx, task, do_fsync=True)
+                        break
+                    if not raw_data:
+                        continue
+                    got_data = True
                     last_data_ts = time.time()
-                    got_data = False
-                    for raw_data in resp.iter_content(chunk_size=8192):
-                        if ctx.stop_event.is_set():
-                            flush_single_chunk_buffer(ctx, task, do_fsync=True)
-                            break
-                        if not raw_data:
-                            continue
-                        got_data = True
-                        last_data_ts = time.time()
-                        task.task_buffer.write(raw_data)
-                        data_len = len(raw_data)
-                        # 全局限速：限制整体下载速度（0 时不生效）
-                        rate_limit_wait(ctx, data_len)
-                        task.downloaded += data_len
-                        
-                        with ctx.global_lock:
-                            ctx.total_downloaded += data_len
-                        
-                        if task.task_buffer.getbuffer().nbytes >= max_cache_bytes:
-                            flush_single_chunk_buffer(ctx, task)
-                        
-                        pct = min(int((task.downloaded / total_chunk_len) * 100), 100)
-                        ui_push_chunk_progress(ctx, task.chunk_idx, task.downloaded, total_chunk_len)
-                        current_offset = task.start_byte + task.downloaded
-                        if task.downloaded >= total_chunk_len:
-                            chunk_finish_flag = True
-                            break
-                        # 停滞看门狗
-                        if not ctx.stop_event.is_set() and (time.time() - last_data_ts) > read_to:
-                            raise requests.exceptions.ReadTimeout("读取停滞超时，主动重试")
-                    if not got_data:
-                        raise requests.exceptions.ReadTimeout("服务器未返回任何数据，主动重试")
+                    task.task_buffer.write(raw_data)
+                    data_len = len(raw_data)
+                    # 全局限速：限制整体下载速度（0 时不生效）
+                    rate_limit_wait(ctx, data_len)
+                    task.downloaded += data_len
+                    
+                    with ctx.global_lock:
+                        ctx.total_downloaded += data_len
+                    
+                    if task.task_buffer.getbuffer().nbytes >= max_cache_bytes:
+                        flush_single_chunk_buffer(ctx, task)
+                    
+                    pct = min(int((task.downloaded / total_chunk_len) * 100), 100)
+                    ui_push_chunk_progress(ctx, task.chunk_idx, task.downloaded, total_chunk_len)
+                    current_offset = task.start_byte + task.downloaded
+                    if task.downloaded >= total_chunk_len:
+                        chunk_finish_flag = True
+                        break
+                    # 停滞看门狗
+                    if not ctx.stop_event.is_set() and (time.time() - last_data_ts) > read_to:
+                        raise requests.exceptions.ReadTimeout("读取停滞超时，主动重试")
+                if not got_data:
+                    raise requests.exceptions.ReadTimeout("服务器未返回任何数据，主动重试")
             
             
+            except RangeUnsupported as e:
+                with ctx.global_lock:
+                    task.failed = True
+                ui_push_log(ctx, f"分片{task.chunk_idx}失败: {str(e)}")
+                ui_push_global_status(ctx, "下载失败：服务器不支持分片下载")
+                break
             except Exception as e:
                 retry_times += 1
                 err_msg = f"分片{task.chunk_idx}异常 重试{retry_times}/{DEFAULT_RETRY}: {str(e)}"
@@ -465,11 +681,7 @@ def ui_push_chunk_progress(ctx: DownloadCtx, chunk_idx: int, downloaded: int, ch
     pct = min(int((downloaded / chunk_total) * 100), 100)
     wx.CallAfter(ctx.ui_frame.update_grid_cell, chunk_idx, pct)
 def ui_refresh_speed_panel(ctx: DownloadCtx) -> None:
-    """刷新速度面板。
-    速度 = 采样窗口内的真实字节数 / 真实耗时。不做任何“每次最多减半”之类的钳制——
-    那种钳制会在下载停顿/缓冲时让平均速度每 0.3s 迭代指数衰减，最终显示 0.x B/s 这种
-    物理上不可能的数值，并导致剩余时间被越算越长。窗口内真实速度为 0 就显示 0。
-    """
+
     if ctx.stop_event.is_set() or ctx.ui_frame is None or ctx.file_total_size == 0:
         return
     
@@ -570,6 +782,10 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         t.start()
     
 
+    stall_limit = GLOBAL_STALL_TIMEOUT
+    last_progress_bytes = ctx.total_downloaded
+    last_progress_ts = time.time()
+
     while not ctx.stop_event.is_set():
         if any(t.failed for t in ctx.chunk_task_list):
             ui_push_global_status(ctx, f"下载失败：{sum(1 for t in ctx.chunk_task_list if t.failed)} 个分片重试耗尽")
@@ -577,11 +793,21 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         all_chunk_finished = all(t.finished for t in ctx.chunk_task_list)
         if all_chunk_finished:
             break
+        with ctx.global_lock:
+            cur_progress_bytes = ctx.total_downloaded
+        if cur_progress_bytes > last_progress_bytes:
+            last_progress_bytes = cur_progress_bytes
+            last_progress_ts = time.time()
+        elif time.time() - last_progress_ts > stall_limit:
+            ui_push_global_status(ctx, f"下载失败：{int(stall_limit)} 秒无任何数据推进，已终止")
+            ui_push_log(ctx, f"全局停滞保护触发：{int(stall_limit)} 秒内无字节下载，主动终止（链接可能被限速/防盗链/服务器无响应）")
+            break
         ui_refresh_speed_panel(ctx)
         time.sleep(0.1)
     
 
     ctx.stop_event.set()
+    kill_active_curls(ctx)
     
 
     if ctx.file_obj is not None:
@@ -590,8 +816,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         ctx.file_obj.close()
         ctx.file_obj = None
 
-    # 仅为未完成的下载保存断点进度（用户点“暂停/终止”触发 stop_event 时也在此保存，
-    # 便于稍后在下载管理器恢复续传）；成功完成的下载会在此后删除该进度文件。
+   
     if not all(t.finished for t in ctx.chunk_task_list):
         try:
             dump_progress_json(ctx)
@@ -610,8 +835,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     
     threading.Thread(target=background_cleanup, daemon=True).start()
     
-    # 用户点“暂停”触发的停止：若确未完成则保存断点、不弹窗、不回调、不关闭窗口，
-    # 仅供后续“恢复”续传；若暂停瞬间刚好下载完成则继续走正常完成流程。
+  
     if ctx.pause_requested and not all(t.finished for t in ctx.chunk_task_list):
         try:
             dump_progress_json(ctx)
@@ -690,7 +914,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             except Exception:
                 pass
 
-        # 清理下载目录与缓存目录中的中间文件，保持目录整洁
+        # 清理下载目录
         try:
             import DownloadCleanup
             DownloadCleanup.cleanup_download_artifacts(ctx.save_path, ctx.filename)
@@ -790,11 +1014,132 @@ def init_download_context(
     ctx.file_obj = None
     ctx.info_error = ""
     ctx.pause_requested = False
-    # 初始化全局限速时间基准（默认不限速）
+    
     ctx.speed_limit_bps = 0.0
     ctx.rate_lock = threading.Lock()
     ctx.rate_last_refill = 0.0
+    ctx.use_curl = False
+    ctx.active_curl_procs = set()
     return ctx
+
+def _probe_with_requests(url: str, headers: Dict[str, str], disable_ssl: bool,
+                         result_box: Dict[str, Any], done_event: threading.Event) -> None:
+    """后台线程：用 requests 探测状态码 / 最终 URL / 大小。"""
+    session = None
+    try:
+        session = requests.Session()
+        session.max_redirects = 16
+        with session.get(url, headers=headers, stream=True,
+                         timeout=(CONNECT_TIMEOUT, DEFAULT_TIMEOUT), verify=not disable_ssl) as r:
+            result_box["status"] = r.status_code
+            result_box["final_url"] = (r.url or "").strip()
+            result_box["size"] = int(r.headers.get("content-length", 0) or 0)
+            if r.status_code < 400 and result_box["size"] <= 0:
+                head_resp = requests.head(
+                    r.url or url, headers=headers, timeout=(CONNECT_TIMEOUT, DEFAULT_TIMEOUT),
+                    verify=not disable_ssl, allow_redirects=True)
+                try:
+                    if head_resp.status_code < 400:
+                        result_box["final_url"] = (head_resp.url or "").strip() or result_box["final_url"]
+                        result_box["size"] = int(head_resp.headers.get("content-length", 0) or 0)
+                finally:
+                    head_resp.close()
+    except Exception as e:
+        result_box["error"] = str(e) or type(e).__name__
+    finally:
+        result_box["done"] = True
+        done_event.set()
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
+def _probe_source(ctx: DownloadCtx) -> Dict[str, Any]:
+    """双路探测 requests 与 curl，识别 TLS 指纹封锁。"""
+    outcome = {"ok": False, "status": 0, "final_url": "", "size": 0,
+               "error": "", "use_curl": False}
+
+    req_box: Dict[str, Any] = {"status": 0, "final_url": "", "size": 0, "error": "", "done": False}
+    req_done = threading.Event()
+    req_thread = threading.Thread(
+        target=_probe_with_requests,
+        args=(ctx.url, ctx.headers, ctx.disable_ssl, req_box, req_done),
+        daemon=True)
+    req_thread.start()
+
+    req_finished_in_time = req_done.wait(CURL_PROBE_TIMEOUT)
+
+    use_curl = False
+    curl_res: Dict[str, Any] = {}
+    if curl_available():
+        if not req_finished_in_time:
+            curl_res = curl_probe(ctx.url, ctx.headers, ctx.disable_ssl, CURL_PROBE_TIMEOUT)
+            if curl_res.get("ok"):
+                use_curl = True
+                ui_push_log(ctx, f"requests 探测超过 {CURL_PROBE_TIMEOUT}s 未响应而 curl 正常，切换 curl 后端（疑似 TLS 指纹封锁）")
+        else:
+            req_ok = (req_box.get("status") or 0) < 400 and not req_box.get("error")
+            if not req_ok:
+                curl_res = curl_probe(ctx.url, ctx.headers, ctx.disable_ssl, CURL_PROBE_TIMEOUT)
+                if curl_res.get("ok"):
+                    use_curl = True
+                    ui_push_log(ctx, "requests 探测失败但 curl 成功，切换 curl 后端")
+    elif not req_finished_in_time:
+        ui_push_log(ctx, "未找到 curl 可执行文件，无法启用兜底后端；该链接可能因 TLS 指纹封锁而长时间无响应")
+
+    if not req_finished_in_time and not use_curl:
+        # 8s 只是“启动 curl 对照”的阈值，不是放弃时限；
+        # 慢但最终会响应的服务器仍需按 DEFAULT_TIMEOUT 继续等待（与旧版行为一致）。
+        req_done.wait(DEFAULT_TIMEOUT)
+
+    if use_curl:
+        outcome["ok"] = True
+        outcome["status"] = curl_res.get("status", 0)
+        outcome["final_url"] = curl_res.get("final_url", "")
+        outcome["size"] = curl_res.get("total_size", 0)
+        outcome["use_curl"] = True
+        return outcome
+
+    if curl_res:
+        outcome["curl_status"] = int(curl_res.get("status") or 0)
+        outcome["curl_tried"] = True
+
+    if req_box.get("done") and not req_box.get("error"):
+        status = req_box.get("status") or 0
+        if status >= 400:
+            outcome["status"] = status
+            outcome["error"] = f"服务器返回 HTTP {status}，链接可能已失效或需要 Cookie/请求头（拒绝鉴权）"
+            return outcome
+        outcome["ok"] = True
+        outcome["status"] = status
+        outcome["final_url"] = req_box.get("final_url", "")
+        outcome["size"] = req_box.get("size", 0)
+        return outcome
+
+    outcome["error"] = req_box.get("error") or "获取文件信息超时"
+    return outcome
+
+
+def probe_source_with_retry(ctx: DownloadCtx) -> Dict[str, Any]:
+    """对 403/429/503 这类可能临时的风控响应做有限重试（间隔递增退避）。"""
+    result: Dict[str, Any] = {}
+    for attempt in range(1, PROBE_RETRY_TIMES + 1):
+        result = _probe_source(ctx)
+        if result.get("ok"):
+            return result
+        if result.get("status") not in PROBE_RETRY_STATUS:
+            return result
+        if attempt < PROBE_RETRY_TIMES and not ctx.stop_event.is_set():
+            wait_sec = PROBE_RETRY_DELAY * attempt
+            hint = ""
+            if result.get("curl_tried") and (result.get("curl_status") or 0) >= 400:
+                hint = "（requests 与 curl 均被拒，疑似站点风控限流，请稍后再试）"
+            ui_push_log(ctx, f"探测返回 HTTP {result.get('status')}{hint}，{wait_sec}s 后重试（{attempt}/{PROBE_RETRY_TIMES}）")
+            time.sleep(wait_sec)
+    return result
+
 
 def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
     resume_data = {}
@@ -802,33 +1147,25 @@ def fetch_file_size_and_setup_chunks(ctx: DownloadCtx):
         resume_data = load_progress_json(ctx._resume_json_path)
     ctx.original_url = ctx.url or ""
     ctx.info_error = ""
-    try:
-        
-        session = requests.Session()
-        session.max_redirects = 16
-        final_size = 0
-        with session.get(ctx.url, headers=ctx.headers, stream=True,
-                         timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl) as r:
-            final_url = (r.url or "").strip()
-            if final_url and final_url != ctx.url:
-                ui_push_log(ctx, f"已重定向到: {final_url}")
-                ctx.url = final_url
-            final_size = int(r.headers.get("content-length", 0) or 0)
-        session.close()
-        ctx.file_total_size = final_size
-        if ctx.file_total_size <= 0:
-            head_resp = requests.head(ctx.url, headers=ctx.headers, timeout=DEFAULT_TIMEOUT, verify=not ctx.disable_ssl)
-            ctx.file_total_size = int(head_resp.headers.get("content-length", 0) or 0)
-    except Exception as e:
-        ctx.info_error = str(e) or type(e).__name__
-        ui_push_log(ctx, f"获取文件大小异常: {ctx.info_error}")
-        ctx.file_total_size = resume_data.get("file_total_size", 0)
-    else:
+    probe = probe_source_with_retry(ctx)
+    if probe.get("ok"):
+        final_url = (probe.get("final_url") or "").strip()
+        if final_url and final_url != ctx.url:
+            ui_push_log(ctx, f"已重定向到: {final_url}")
+            ctx.url = final_url
+        ctx.use_curl = bool(probe.get("use_curl"))
+        ctx.file_total_size = int(probe.get("size") or 0)
+        if ctx.use_curl:
+            ui_push_log(ctx, f"使用 curl 后端，文件大小 {ctx.file_total_size} 字节")
         if ctx.file_total_size <= 0:
             ctx.info_error = "服务器未返回 content-length，无法获得文件大小"
             ui_push_log(ctx, ctx.info_error)
-        else:
-            ctx.info_error = ""
+    else:
+        ctx.info_error = probe.get("error") or "获取文件信息失败"
+        if probe.get("curl_tried") and (probe.get("curl_status") or 0) >= 400:
+            ctx.info_error += "（requests 与 curl 均被拒绝，疑似站点风控/限流，请稍后重试或检查 Cookie）"
+        ui_push_log(ctx, f"获取文件大小异常: {ctx.info_error}")
+        ctx.file_total_size = resume_data.get("file_total_size", 0)
     if resume_data and "chunks" in resume_data:
         ctx.chunk_task_list = [
             ChunkTask(
@@ -1370,6 +1707,7 @@ class DownloadFrame(wx.Frame):
             self.panel.Layout()
             if ctx.stop_event:
                 ctx.stop_event.set()
+                kill_active_curls(ctx)
         else:
             # ---------- 恢复 ----------
             wx.CallAfter(self._resume_download)
@@ -1408,6 +1746,7 @@ class DownloadFrame(wx.Frame):
         try:
             if self.ctx.stop_event:
                 self.ctx.stop_event.set()
+                kill_active_curls(self.ctx)
             
             self.btn_export.Enable(False)
             self.btn_pause.Enable(False)
@@ -1541,6 +1880,7 @@ class DownloadFrame(wx.Frame):
         dump_progress_json(ctx)
         if ctx.stop_event:
             ctx.stop_event.set()
+            kill_active_curls(ctx)
 
         if ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
             dlg = wx.MessageDialog(

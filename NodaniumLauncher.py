@@ -2,7 +2,10 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import os
-import wx
+try:
+    import wx
+except:
+    ...
 import time
 import Adminchecker
 import sys
@@ -66,7 +69,7 @@ def print_help():
 
 
 def _show_resume_dialog(ndf_path, parsed_args):
-    """恢复下载对话框"""
+   
     import tempfile
     import zipfile
     import json
@@ -303,13 +306,7 @@ def _strip_quotes(value):
     return value
 
 
-def _show_torrent_window(source, save_path="", ask=True):
-    """独立启动 BT 下载窗口（不拉起主窗口）。
 
-    仿照 .ndf 恢复下载的做法，仅弹出一个下载进度窗口。
-    ask=True 时先弹出保存位置/做种参数确认框。
-    返回进程退出码（0 成功，1 失败，2 用户取消）。
-    """
     try:
         import wx
         app = wx.GetApp()
@@ -322,7 +319,63 @@ def _show_torrent_window(source, save_path="", ask=True):
         print(f"BT 下载窗口启动失败: {e}")
         return 1
 
+
+_CLI_SUBCOMMANDS = {"download", "help", "version"}
+_CLI_GLOBAL_FLAGS = {"--lang", "--color", "-h", "--help", "-v", "--version"}
+
+_LEGACY_ONLY_FLAGS = {
+    "-c", "--clear", "-y", "-s", "--silent", "-r", "--resume",
+    "--download", "--old_download",
+}
+
+
+def _dispatch_cli(argv):
+ 
+    tokens = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a in ("--lang", "--color"):
+            skip = True
+            continue
+        tokens.append(a)
+
+    has_legacy = any(a in _LEGACY_ONLY_FLAGS or
+                     a.split("=", 1)[0] in _LEGACY_ONLY_FLAGS
+                     for a in tokens)
+    if has_legacy:
+        return
+
+    first_pos = ""
+    for a in argv:
+        if a in ("--lang", "--color"):
+            continue
+        if a.startswith("-"):
+            continue
+        first_pos = a
+        break
+
+    use_cli = (first_pos in _CLI_SUBCOMMANDS
+               or "--lang" in argv or "--color" in argv
+               or any(a.startswith("--lang=") or a.startswith("--color=")
+                      for a in argv))
+
+    if not use_cli and argv and argv[0] in ("-h", "--help", "-v", "--version"):
+        use_cli = True
+
+    if use_cli:
+        try:
+            from cli.cli import main as _cli_main
+            sys.exit(_cli_main(argv))
+        except ImportError as e:
+            print(f"CLI 模块加载失败: {e}")
+            sys.exit(1)
+
+
 if len(sys.argv) > 1:
+    _dispatch_cli(sys.argv[1:])
     args = sys.argv[1:]
     parsed_args = parse_args(args)
     

@@ -1,0 +1,117 @@
+[meta]
+code = en
+name = English
+
+[welcome]
+tagline = Nodanium
+hint_help = Type 'nodanium --help' for full usage
+hint_lang = Switch language: --lang ch_zn
+hint_download = Quick start: nodanium download <url>
+version_line = version {version}  |  {lang}
+
+[cli]
+app_title = Nodanium Downloader
+gui_hint = GUI mode: run without arguments to open the window; legacy flags: -c -s -r --download
+usage = Usage
+usage_line = nodanium download <url> [options]
+commands = Commands
+options = Options
+global_options = Global options
+download_options = Download options
+examples = Examples
+example_1 = nodanium download https://example.com/a.zip -j 16
+example_2 = nodanium download https://example.com/a.zip -o ~/Downloads -f a.zip
+example_3 = nodanium download https://example.com/a.zip --limit 5000 --run open
+language_section = Language
+lang_help = Switch output language
+exit_section = Interrupt
+interrupt_help = Press Ctrl+C to abort; progress is saved for resume
+cmd_help = Show help for a command
+opt_help = Show this help message and exit
+opt_version = Show version and exit
+opt_lang = Output language (en / ch_zn)
+opt_color = Color mode (auto / always / never)
+cmd_download = Download a file with multiple threads
+resume_hint = Resume with: nodanium resume <file.ndf>
+exitcodes = Exit codes
+exit_ok = Download completed successfully
+exit_fail = Download failed
+exit_usage = Invalid command or arguments
+exit_noinfo = Could not fetch file info (no content-length)
+exit_abort = Aborted by user (Ctrl+C), progress saved
+
+[opt]
+url = Download URL
+output = Save directory
+filename = Output filename
+jobs = Concurrent threads (default 16, max 128)
+chunk_size = Chunk size in MB (default 10)
+cache = Memory buffer in MB (default 32)
+limit = Speed limit in KB/s (0 = unlimited)
+timeout = Fetch timeout in seconds (default 60)
+header = Custom header "Key: Value" (repeatable)
+header_json = Whole header dict as JSON
+no_ssl_check = Disable SSL verification
+run = Action after finish (open / shutdown)
+speed_unit = Speed unit (MB/s, MiB/s, Mbps)
+json = Machine-readable JSON output
+backend = Backend: auto (requests + curl fallback) / requests / curl
+
+[info]
+header = Download information
+url = URL
+filename = Filename
+save_path = Save path
+total_size = File size
+chunks = Chunks
+chunk_size = Chunk size
+threads = Threads
+buffer = Buffer
+limit = Speed limit
+supported = Multi-thread supported
+unsupported = Server does not return content-length, single thread only
+fetching = Fetching file information...
+resolved = Redirected to {url}
+backend = Backend
+backend_requests = requests
+backend_curl = curl (TLS fingerprint bypass)
+curl_switching = requests failed, switching to curl fallback...
+probe_slow = Probing is slow, curl fallback is still working...
+
+[progress]
+line = {name}  {bar} {pct}%  {speed}  ETA {eta}  [{done}/{total}]
+chunk_line = chunks {finished}/{total}  active {active}
+eta_short = ETA
+chunk_short = ch {finished}/{total}  act {active}
+eta_calc = calculating
+
+[log]
+starting = Starting download: {filename}
+saved_to = Saving to: {path}
+resume_found = Resume data found, continuing
+retry = Chunk {idx} retry {n}/{max}: {err}
+chunk_failed = Chunk {idx} retries exhausted
+interrupted = Download interrupted, progress saved: {path}
+pause_saved = Progress saved, you can resume later
+
+[done]
+success = Download complete: {path}
+success_short = Download complete
+time_cost = Time cost
+avg_speed = Average speed
+failed = Download failed: {reason}
+failed_chunks = {n} chunk(s) exhausted retries
+aborted = Download aborted by user
+
+[error]
+url_required = Missing download URL
+bad_url = Invalid URL: {url}
+output_required = Cannot determine save directory
+path_create_failed = Cannot create save directory: {path}
+unknown_command = Unknown command: {cmd}
+no_content_length = Server did not return content-length, cannot download
+fetch_failed = Failed to fetch file info: {reason}
+curl_missing = curl not found in PATH; the fallback backend is unavailable. Install curl to reach TLS-fingerprint-blocked links
+curl_missing_hint = Install it with: sudo apt install curl
+http_status = Server returned HTTP {status}; the link may be expired or require Cookie/headers
+curl_probe_failed = curl probe failed

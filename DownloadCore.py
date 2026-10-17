@@ -51,7 +51,7 @@ class DownloadFrame(wx.Frame):
 
         # 依据下载 URL 解析站点式请求头（全局默认+命中的站点规则+默认UA），
         # 供分片下载与探测一并完整发送。
-        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"}
+        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
         try:
             import SiteHeaders
             self.headers = SiteHeaders.resolve_headers(url, filename, save_path, self.headers)

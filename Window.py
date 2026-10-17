@@ -2,7 +2,7 @@
 # This file is licensed under the MIT License.
 # SPDX-License-Identifier: MIT
 import logging
-vision = "4.0.1.0"
+vision = "4.0.1.3"
 logging.info('窗口模块启动')
 import wx
 import os
@@ -13,6 +13,7 @@ import sys
 import threading
 import platform
 import wx.adv
+import ProcUtil
 
 ChatPort=None
 
@@ -287,7 +288,7 @@ check=None
 
 def on_analyze(event):
     global url_text_analyze,time_ctrl,check
-    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     head = default_ua
     try:
         import SiteHeaders
@@ -332,7 +333,7 @@ def on_download_button(event):
     with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(history, f, ensure_ascii=False, indent=4)
     
-    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     he = default_ua
     try:
         import SiteHeaders
@@ -1442,9 +1443,9 @@ def Window(silence=False):
         try:
             sys_type = platform.system()
             if sys_type == "Windows":
-                result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+                result = ProcUtil.run(['ipconfig'], capture_output=True, text=True)
             else:
-                result = subprocess.run(['ip', 'addr'], capture_output=True, text=True)
+                result = ProcUtil.run(['ip', 'addr'], capture_output=True, text=True)
             info += "\n网关信息:\n"
             info += result.stdout
         except:
@@ -1544,8 +1545,7 @@ def Window(silence=False):
             if platform.system() == "Windows":
                 os.startfile(open_dir)
             else:
-                import subprocess
-                subprocess.run(["xdg-open", open_dir])
+                ProcUtil.popen(["xdg-open", open_dir])
     
     open_path_btn = wx.Button(right_panel, label="打开保存路径")
     open_path_btn.SetBackgroundColour(wx.Colour(230, 230, 230))

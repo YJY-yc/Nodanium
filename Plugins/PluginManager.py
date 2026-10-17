@@ -456,7 +456,7 @@ def MainPanel(parent):
         # 根据不同操作系统使用不同命令打开文件夹
         try:
             if platform.system() == "Windows":
-                subprocess.Popen(['explorer', plugins_dir])
+                os.startfile(plugins_dir)
             else:  # Linux
                 subprocess.Popen(['xdg-open', plugins_dir])
         except Exception as e:
