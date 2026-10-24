@@ -14,6 +14,7 @@ import threading
 import platform
 import wx.adv
 import ProcUtil
+import StartupMgr
 
 ChatPort=None
 
@@ -31,41 +32,37 @@ sys_type = platform.system()
 
 
 def restart_as_elevated():
-    """以管理员(Windows)/root(Linux)身份重启本程序。
-
-    Windows 用 ShellExecuteW 的 runas 谓词提权；Linux 用 pkexec。
-    提权启动新实例后退出当前进程。另：会先释放单实例锁。
-    """
     import subprocess
-    # 释放单实例锁，避免提权重启的新实例被判定为“程序已运行”
     try:
-        import tempfile
-        lock = os.path.join(tempfile.gettempdir(),
-                            f".{os.path.basename(sys.argv[0])}.lock")
-        if os.path.exists(lock):
-            os.remove(lock)
+        StartupMgr.clear_locks()
     except Exception as e:
         logging.warning(f"释放单实例锁失败: {e}")
 
     if getattr(sys, 'frozen', False):
-        exe = sys.executable
-        args = sys.argv[1:]
+        exe = os.path.abspath(sys.executable)
+        args = list(sys.argv[1:])
+        workdir = os.path.dirname(exe)
     else:
-        exe = sys.executable
-        args = [os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        exe = os.path.abspath(sys.executable)
+        script = os.path.abspath(sys.argv[0])
+        args = [script] + [a for a in sys.argv[1:] if os.path.abspath(a) != script]
+        workdir = os.path.dirname(script)
+
+    if not os.path.exists(exe):
+        wx.MessageBox(f"可执行文件不存在：\n{exe}", "错误", wx.OK | wx.ICON_ERROR)
+        return
 
     if sys_type == "Windows":
         import ctypes
         params = subprocess.list2cmdline(args)
-        workdir = os.path.dirname(os.path.abspath(sys.argv[0]))
         ret = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", exe, params, workdir, 1)
-        # ShellExecuteW 返回值 > 32 表示成功；1223 表示用户取消了 UAC
-        if int(ret) <= 32:
-            if int(ret) == 1223:
+        code = int(ret) if ret is not None else 0
+        if code <= 32:
+            if code == 1223:
                 wx.MessageBox("已取消提权。", "提示", wx.OK | wx.ICON_INFORMATION)
             else:
-                wx.MessageBox(f"提权启动失败（代码 {ret}）。", "错误", wx.OK | wx.ICON_ERROR)
+                wx.MessageBox(f"提权启动失败（代码 {code}）。", "错误", wx.OK | wx.ICON_ERROR)
             return
     else:
         cmd = [exe] + args
@@ -74,8 +71,7 @@ def restart_as_elevated():
         except FileNotFoundError:
             wx.MessageBox("未找到 pkexec，请手动以 root 运行。", "错误", wx.OK | wx.ICON_ERROR)
             return
-    # 新实例已启动，退出当前非特权进程
-    logging.info('以特权身份重启')
+    logging.info(f'以特权身份重启: {exe} {args}')
     sys.exit(0)
 
 

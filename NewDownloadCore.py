@@ -117,6 +117,10 @@ class DownloadCtx:
     # -------------------------- curl 兜底后端 --------------------------
     use_curl: bool = False             # 改用 curl 子进程下载（绕 TLS 指纹封锁）
     active_curl_procs: Optional[Any] = None
+    # -------------------------- 磁盘空间检测 --------------------------
+    disk_space_error: str = ""
+    disk_lock: Optional[threading.Lock] = None
+    last_disk_check_ts: float = 0.0
 
 # -------------------------- curl 兜底后端（绕 TLS 指纹封锁） --------------------------
 CURL_PROBE_TIMEOUT = 8
@@ -353,15 +357,85 @@ def format_speed(speed_bps: float, unit: str = "MB/s") -> str:
         return format_speed(speed_bps, "MB/s")
 
 
+class DiskSpaceError(OSError):
+    pass
+
+
+DISK_SPACE_MARGIN_MIN = 64 * 1024 * 1024
+DISK_SPACE_MARGIN_PCT = 2
+DISK_SPACE_CHECK_INTERVAL = 1.0
+
+
+def get_disk_free_bytes(path: str) -> int:
+    probe = path
+    while probe and not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return shutil.disk_usage(probe or os.getcwd()).free
+
+
+def get_existing_file_size(path: str) -> int:
+    try:
+        if path and os.path.isfile(path):
+            return os.path.getsize(path)
+    except Exception:
+        pass
+    return 0
+
+
+def check_disk_space(path: str, needed_bytes: int, current_bytes: int = 0) -> Tuple[bool, int, int]:
+    free = get_disk_free_bytes(path)
+    required = max(0, int(needed_bytes)) - max(0, int(current_bytes))
+    margin = max(DISK_SPACE_MARGIN_MIN, int(needed_bytes * DISK_SPACE_MARGIN_PCT / 100))
+    return free >= required + margin, free, required
+
+
+def format_disk_space_error(free: int, required: int, path: str) -> str:
+    margin = max(DISK_SPACE_MARGIN_MIN, int(required * DISK_SPACE_MARGIN_PCT / 100))
+    return (
+        f"磁盘可用空间不足\n保存目录：{os.path.dirname(path) or path}\n"
+        f"还需空间：{required / 1024 / 1024:.2f}MiB（含预留 {margin / 1024 / 1024:.2f}MiB）\n"
+        f"可用空间：{free / 1024 / 1024:.2f}MiB\n"
+        f"请清理磁盘或更换保存目录后重试。"
+    )
+
+
+def _watch_disk_space(ctx: DownloadCtx) -> None:
+    target = os.path.join(ctx.save_path, ctx.filename)
+    try:
+        ok, free, _ = check_disk_space(target, ctx.file_total_size, ctx.total_downloaded)
+    except Exception:
+        return
+    if ok:
+        return
+    with ctx.disk_lock:
+        if ctx.disk_space_error:
+            return
+        ctx.disk_space_error = f"磁盘空间不足（可用 {free / 1024 / 1024:.2f}MiB），下载已中止"
+        ctx.stop_event.set()
+    ui_push_log(ctx, ctx.disk_space_error)
+    kill_active_curls(ctx)
+
+
 def pre_allocate_file(file_path: str, total_size: int, resume: bool = False):
     """纯Python预分配完整占位文件，buffering=0禁用缓冲，fsync强制落盘"""
+    if not resume and total_size > 0:
+        ok, free, _ = check_disk_space(file_path, total_size, get_existing_file_size(file_path))
+        if not ok:
+            raise DiskSpaceError(format_disk_space_error(free, total_size, file_path))
     mode = "r+b" if resume else "wb"
     f = open(file_path, mode, buffering=0)
     if not resume and total_size > 0:
         f.seek(total_size - 1)
-        f.write(b"\x00")
-        f.flush()
-        os.fsync(f.fileno())
+        try:
+            f.write(b"\x00")
+            f.flush()
+            os.fsync(f.fileno())
+        except BaseException:
+            f.close()
+            raise
     return f
 
 def chunk_seek_write(file_obj, offset: int, data: bytes, do_fsync: bool = False) -> bool:
@@ -606,12 +680,13 @@ def single_chunk_worker(ctx: DownloadCtx) -> None:
                         continue
                     got_data = True
                     last_data_ts = time.time()
-                    task.task_buffer.write(raw_data)
                     data_len = len(raw_data)
                     # 全局限速：限制整体下载速度（0 时不生效）
                     rate_limit_wait(ctx, data_len)
-                    task.downloaded += data_len
-                    
+                    task.task_buffer.write(raw_data)
+                    with task.chunk_lock:
+                        task.downloaded += data_len
+
                     with ctx.global_lock:
                         ctx.total_downloaded += data_len
                     
@@ -762,6 +837,18 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     target_full_path = os.path.join(ctx.save_path, ctx.filename)
     has_resume_data = sum(t.downloaded for t in ctx.chunk_task_list) > 0
     
+    if not has_resume_data:
+        ok, free, required = check_disk_space(target_full_path, ctx.file_total_size, get_existing_file_size(target_full_path))
+        if not ok:
+            ctx.disk_space_error = format_disk_space_error(free, required, target_full_path)
+            ui_push_global_status(ctx, "磁盘空间不足，下载已中止")
+            ui_push_log(ctx, ctx.disk_space_error)
+            _ui_fail_warning(ctx, ctx.disk_space_error)
+            if ctx.completion_callback:
+                wx.CallAfter(ctx.completion_callback, False, 0, ctx.uuid)
+            return
+        ctx.last_disk_check_ts = time.time()
+    
     try:
         ctx.file_obj = pre_allocate_file(target_full_path, ctx.file_total_size, resume=has_resume_data)
     except Exception as e:
@@ -803,6 +890,10 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             ui_push_log(ctx, f"全局停滞保护触发：{int(stall_limit)} 秒内无字节下载，主动终止（链接可能被限速/防盗链/服务器无响应）")
             break
         ui_refresh_speed_panel(ctx)
+        now_ts = time.time()
+        if now_ts - ctx.last_disk_check_ts >= DISK_SPACE_CHECK_INTERVAL:
+            ctx.last_disk_check_ts = now_ts
+            _watch_disk_space(ctx)
         time.sleep(0.1)
     
 
@@ -942,6 +1033,14 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         wx.CallAfter(show_complete_dialog_and_close)
     
     # 下载失败
+    elif ctx.disk_space_error and not all_chunk_finished:
+        ui_push_global_status(ctx, "磁盘空间不足，下载已中止")
+        ui_push_log(ctx, f"内存统计总字节:{ctx.total_downloaded}，磁盘真实大小:{final_file_size}，原始文件大小:{ctx.file_total_size}")
+        _ui_fail_warning(ctx, f"{ctx.disk_space_error}\n断点进度已保存，清理磁盘后可在下载管理器中恢复下载。")
+        if ctx.uuid:
+            update_download_record_by_uuid(ctx.uuid, status="失败：磁盘空间不足", file_size=final_file_size)
+        if ctx.completion_callback:
+            wx.CallAfter(ctx.completion_callback, False, final_file_size, ctx.uuid)
     elif any(t.failed for t in ctx.chunk_task_list):
         failed_cnt = sum(1 for t in ctx.chunk_task_list if t.failed)
         ui_push_global_status(ctx, f"下载失败：{failed_cnt} 个分片重试耗尽")
@@ -1020,6 +1119,9 @@ def init_download_context(
     ctx.rate_last_refill = 0.0
     ctx.use_curl = False
     ctx.active_curl_procs = set()
+    ctx.disk_space_error = ""
+    ctx.disk_lock = threading.Lock()
+    ctx.last_disk_check_ts = 0.0
     return ctx
 
 def _probe_with_requests(url: str, headers: Dict[str, str], disable_ssl: bool,
@@ -1370,6 +1472,7 @@ class DownloadFrame(wx.Frame):
             ("total", "文件总大小", "--"),
             ("chunk", "分片(已完成/总数)", "--"),
             ("remaining", "剩余大小", "--"),
+            ("disk_free", "磁盘可用", "--"),
         ]
         for key, label, init in info_defs:
             name_txt = wx.StaticText(info_panel, label=f"{label}:")
@@ -1646,6 +1749,12 @@ class DownloadFrame(wx.Frame):
         labels["chunk"].SetLabel(f"{sum(1 for t in chunk_list if t.finished)}/{len(chunk_list)}")
         labels["save_path"].SetLabel(ctx.save_path or "--")
         labels["filename"].SetLabel(ctx.filename or "--")
+        if "disk_free" in labels:
+            try:
+                free = get_disk_free_bytes(os.path.join(ctx.save_path, ctx.filename))
+                labels["disk_free"].SetLabel(self._fmt_size(free))
+            except Exception:
+                labels["disk_free"].SetLabel("--")
         # 标签内容长度可能变化，展开时触发一次布局以适配长宽
         if hasattr(self, "info_pane") and self.info_pane.IsExpanded():
             self.info_pane.GetPane().Layout()

@@ -26,15 +26,15 @@ def _add_download_opts(parser):
     parser.add_argument("url", nargs="?", help=i18n.t("opt.url"))
     parser.add_argument("-o", "--output", help=i18n.t("opt.output"))
     parser.add_argument("-f", "--filename", help=i18n.t("opt.filename"))
-    parser.add_argument("-j", "--jobs", type=int, default=16,
+    parser.add_argument("-j", "--jobs", type=int, default=None,
                         help=i18n.t("opt.jobs"))
-    parser.add_argument("-s", "--chunk-size", type=float, default=10.0,
+    parser.add_argument("-s", "--chunk-size", type=float, default=None,
                         help=i18n.t("opt.chunk_size"))
-    parser.add_argument("--cache", type=float, default=32.0,
+    parser.add_argument("--cache", type=float, default=None,
                         help=i18n.t("opt.cache"))
     parser.add_argument("--limit", type=float, default=0.0,
                         help=i18n.t("opt.limit"))
-    parser.add_argument("--timeout", type=float, default=60.0,
+    parser.add_argument("--timeout", type=float, default=None,
                         help=i18n.t("opt.timeout"))
     parser.add_argument("-H", "--header", action="append", default=[],
                         help=i18n.t("opt.header"))
@@ -47,8 +47,8 @@ def _add_download_opts(parser):
                         help=i18n.t("opt.backend"))
     parser.add_argument("--run", choices=["open", "shutdown"], default="",
                         help=i18n.t("opt.run"))
-    parser.add_argument("--speed-unit", default="MB/s",
-                        choices=["MB/s", "MiB/s", "Mbps"],
+    parser.add_argument("--speed-unit", default="",
+                        choices=["", "MB/s", "MiB/s", "Mbps"],
                         help=i18n.t("opt.speed_unit"))
     parser.add_argument("--json", action="store_true",
                         help=i18n.t("opt.json"))
@@ -114,6 +114,7 @@ def _print_help():
     _section(i18n.t("cli.commands"))
     _cmd("download", "<url> [options]", i18n.t("cli.cmd_download"),
          ("nodanium download --help",))
+    _cmd("tui", "", i18n.t("cli.cmd_tui"))
     _cmd("help", "[command]", i18n.t("cli.cmd_help"))
     _cmd("version", "", i18n.t("cli.opt_version"))
    
@@ -145,6 +146,7 @@ def _print_help():
     _opt("1", i18n.t("cli.exit_fail"))
     _opt("2", i18n.t("cli.exit_usage"))
     _opt("3", i18n.t("cli.exit_noinfo"))
+    _opt("4", i18n.t("cli.exit_nospace"))
     _opt("130", i18n.t("cli.exit_abort"))
    
     print("  " + paint(i18n.t("cli.gui_hint"), Ansi.DIM))
@@ -183,6 +185,13 @@ def _print_download_help():
    
     _section(i18n.t("cli.exit_section"))
     print("  " + i18n.t("cli.interrupt_help"))
+
+
+def _print_welcome_banner():
+    if not sys.stdout.isatty():
+        return
+    print(paint(f"{i18n.t('cli.app_title')} v{VERSION}", Ansi.BOLD, Ansi.CYAN))
+    print()
 
 
 def _print_welcome():
@@ -276,6 +285,10 @@ def main(argv=None) -> int:
     if command in ("-v", "--version", "version"):
         _print_welcome()
         return 0
+
+    if command == "tui":
+        from . import tui
+        return tui.run_tui()
 
     if command != "download":
         print(paint(i18n.t("error.unknown_command", cmd=command), Ansi.RED))

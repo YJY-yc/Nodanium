@@ -10,6 +10,7 @@ import subprocess
 import glob
 import logging
 import ProcUtil
+import StartupMgr
 
 config = {
     'font_size': 17,
@@ -1067,104 +1068,20 @@ def options(event):
     sys_type = platform.system()
 
     app_dir = os.path.dirname(os.path.abspath(__file__))
-    _exe = sys.executable.lower()
-    is_frozen = not (_exe.endswith('python.exe') or _exe.endswith('pythonw.exe') or
-                     _exe.endswith('python3') or _exe.endswith('python'))
 
-    if is_frozen:
-        main_script = sys.executable
-    else:
-        main_script = os.path.join(app_dir, "NodaniumLauncher.py")
-
-    def _build_cmd(args):
-        """Build a command line string for launching Nodanium."""
-        if is_frozen:
-            return f'"{sys.executable}" {args}'
-        else:
-            if sys_type == "Windows":
-                python_dir = os.path.dirname(sys.executable)
-                pythonw = os.path.join(python_dir, "pythonw.exe")
-                launcher = os.path.abspath(main_script)
-                if os.path.exists(pythonw):
-                    return f'"{pythonw}" "{launcher}" {args}'
-                return f'"{sys.executable}" "{launcher}" {args}'
-            else:
-                launcher = os.path.abspath(main_script)
-                return f'{sys.executable} "{launcher}" {args}'
-
-  
     autostart_box = wx.StaticBox(config_panel, label="开机自启动")
     autostart_sizer = wx.StaticBoxSizer(autostart_box, wx.VERTICAL)
 
     autostart_check = wx.CheckBox(config_panel, label="开机自动启动 Nodanium")
 
-    def _autostart_desktop_path():
-        return os.path.expanduser("~/.config/autostart/nodanium.desktop")
-
-    def get_autostart_status():
-        try:
-            if sys_type == "Windows":
-                import winreg
-                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                     r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                     0, winreg.KEY_READ)
-                try:
-                    winreg.QueryValueEx(key, "Nodanium")
-                    return True
-                except FileNotFoundError:
-                    return False
-                finally:
-                    winreg.CloseKey(key)
-            elif sys_type == "Linux":
-                return os.path.exists(_autostart_desktop_path())
-        except Exception:
-            return False
-        return False
-
-    def set_autostart(enable):
-        """返回 (是否成功, 错误信息)"""
-        try:
-            if sys_type == "Windows":
-                import winreg
-                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
-                                       r"Software\Microsoft\Windows\CurrentVersion\Run")
-                try:
-                    if enable:
-                        winreg.SetValueEx(key, "Nodanium", 0, winreg.REG_SZ, _build_cmd("-s"))
-                    else:
-                        try:
-                            winreg.DeleteValue(key, "Nodanium")
-                        except FileNotFoundError:
-                            pass
-                finally:
-                    winreg.CloseKey(key)
-            elif sys_type == "Linux":
-                desktop_path = _autostart_desktop_path()
-                if enable:
-                    os.makedirs(os.path.dirname(desktop_path), exist_ok=True)
-                    if is_frozen:
-                        exec_line = f"{sys.executable} -s"
-                    else:
-                        exec_line = f"{sys.executable} {os.path.abspath(main_script)} -s"
-                    with open(desktop_path, 'w') as f:
-                        f.write("[Desktop Entry]\nType=Application\nName=Nodanium\n"
-                                f"Exec={exec_line}\nX-GNOME-Autostart-enabled=true\nTerminal=false\n")
-                else:
-                    if os.path.exists(desktop_path):
-                        os.remove(desktop_path)
-            else:
-                return False, "当前系统不支持"
-            return True, None
-        except Exception as e:
-            return False, str(e)
-
-    autostart_check.SetValue(get_autostart_status())
+    autostart_check.SetValue(StartupMgr.get_autostart_status())
 
     def on_autostart_toggle(event):
-        ok, err = set_autostart(autostart_check.GetValue())
+        ok, err = StartupMgr.set_autostart(autostart_check.GetValue())
         if not ok:
             autostart_check.SetValue(not autostart_check.GetValue())
             logging.warning(f"设置开机自启失败: {err}")
+            wx.MessageBox(f"写入开机启动项失败：\n{err}", "错误", wx.OK | wx.ICON_ERROR)
 
     autostart_check.Bind(wx.EVT_CHECKBOX, on_autostart_toggle)
     autostart_sizer.Add(autostart_check, 0, wx.ALL, 8)
@@ -1188,7 +1105,11 @@ def options(event):
 
     def _icon_path():
         p = os.path.join(app_dir, "icons", "ANT_icon.png")
-        return p if os.path.exists(p) else sys.executable
+        if os.path.exists(p):
+            return p
+        if StartupMgr.is_frozen():
+            return StartupMgr.program_dir()
+        return sys.executable
 
     def _delete_reg_tree(root, path):
         import winreg
@@ -1206,6 +1127,9 @@ def options(event):
 
     def _win_register(ext, prog_id, desc, content_type, open_args):
         import winreg
+        cmd, err = StartupMgr.build_open_command(open_args)
+        if err:
+            raise RuntimeError(err)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\." + ext.lstrip(".")) as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, prog_id)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Software\\Classes\\" + prog_id) as k:
@@ -1215,7 +1139,7 @@ def options(event):
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _icon_path())
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
                               "Software\\Classes\\" + prog_id + r"\shell\open\command") as k:
-            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _build_cmd(open_args))
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd)
 
     def _win_unregister(ext, prog_id):
         import winreg
@@ -1233,8 +1157,9 @@ def options(event):
             pass
 
     def _linux_write_desktop():
-        exec_line = f"{sys.executable} --open=%f" if is_frozen \
-            else f"{sys.executable} {os.path.abspath(main_script)} --open=%f"
+        exec_line, err = StartupMgr._linux_exec_line("--open=%f")
+        if err:
+            raise RuntimeError(err)
         desktop_path = os.path.expanduser("~/.local/share/applications/nodanium.desktop")
         os.makedirs(os.path.dirname(desktop_path), exist_ok=True)
         with open(desktop_path, 'w') as f:

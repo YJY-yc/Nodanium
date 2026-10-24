@@ -466,18 +466,51 @@ def _parse_headers(header_list, header_json):
     return headers
 
 
-def run_download(args) -> int:
+def run_download(args, resume_path: str = "") -> int:
     import NewDownloadCore as core
 
+    # 首选项（AppConfig）作为默认值，命令行显式传参优先
+    try:
+        import AppConfig
+        defaults = AppConfig.download_defaults()
+        default_dir = AppConfig.get_download_dir()
+    except Exception:
+        defaults = {"jobs": 16, "chunk_size": 10.0, "cache": 32.0,
+                    "no_ssl_check": False, "speed_unit": "MB/s",
+                    "timeout": 60.0}
+        default_dir = os.getcwd()
+
     url = args.url
-    save_path = os.path.abspath(os.path.expanduser(args.output or os.getcwd()))
+    save_path = os.path.abspath(os.path.expanduser(
+        args.output or default_dir or os.getcwd()))
     filename = _resolve_filename(url, args.filename)
-    jobs = max(1, min(int(args.jobs), 128))
-    chunk_size = int(float(args.chunk_size) * 1024 * 1024)
-    cache = float(args.cache)
+    jobs = max(1, min(int(args.jobs if args.jobs is not None
+                          else defaults["jobs"]), 128))
+    chunk_mb = float(args.chunk_size if args.chunk_size is not None
+                     else defaults["chunk_size"])
+    chunk_size = max(1, int(chunk_mb * 1024 * 1024))
+    cache = float(args.cache if args.cache is not None else defaults["cache"])
+    timeout = float(args.timeout if args.timeout is not None
+                    else defaults.get("timeout", 60.0))
+    speed_unit = args.speed_unit or defaults["speed_unit"]
+    no_ssl = bool(args.no_ssl_check) or bool(defaults["no_ssl_check"])
     limit_bps = float(args.limit) * 1024 if args.limit else 0.0
-    headers = _parse_headers(getattr(args, "header", None),
-                             getattr(args, "header_json", None))
+    # 首选项里保存的自定义请求头先垫底，命令行 -H 优先覆盖同名项
+    preset_headers = {}
+    try:
+        import AppConfig
+        raw = AppConfig.load().get("dl_headers", [])
+        if isinstance(raw, dict):
+            preset_headers = {str(k): str(v) for k, v in raw.items()}
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    preset_headers[str(item[0])] = str(item[1])
+    except Exception:
+        preset_headers = {}
+    cli_headers = _parse_headers(getattr(args, "header", None),
+                                 getattr(args, "header_json", None))
+    headers = {**preset_headers, **cli_headers}
     run_after = {"open": "Open", "shutdown": "Shutdown"}.get(
         (args.run or "").lower())
 
@@ -498,8 +531,9 @@ def run_download(args) -> int:
     ctx = core.init_download_context(
         url=url, save_path=save_path, filename=filename, jobs=jobs,
         chunk_size=chunk_size, headers=headers, cache_mb=cache,
-        run_after=run_after, disable_ssl=args.no_ssl_check,
-        completion_callback=None, speed_unit=args.speed_unit,
+        run_after=run_after, disable_ssl=no_ssl,
+        completion_callback=None, speed_unit=speed_unit,
+        resume_json_path=resume_path or "",
     )
     ctx.speed_limit_bps = limit_bps
 
@@ -530,7 +564,7 @@ def run_download(args) -> int:
     elif backend == "requests":
         _probe_forced_requests(core, ctx)
     else:
-        _probe_with_progress(core, ctx, state, timeout=args.timeout)
+        _probe_with_progress(core, ctx, state, timeout=timeout)
     use_curl = bool(getattr(ctx, "use_curl", False))
     if not ctx.file_total_size:
         sync.restore(_wx)
@@ -541,7 +575,17 @@ def run_download(args) -> int:
             print("  " + paint(i18n.t("error.curl_missing_hint"), Ansi.DIM))
         return 3
 
+    target_path = os.path.join(save_path, filename)
+    disk_ok, disk_free, disk_required = core.check_disk_space(
+        target_path, ctx.file_total_size, core.get_existing_file_size(target_path))
+    if not disk_ok:
+        sync.restore(_wx)
+        print(paint(i18n.t("error.disk_space", free=_fmt_size(disk_free),
+                           need=_fmt_size(disk_required)), Ansi.RED))
+        return 4
+
     chunks = len(ctx.chunk_task_list)
+    record_uuid = _history_start(url, filename, save_path, ctx.file_total_size)
     print()
     print(paint(i18n.t("info.header"), Ansi.BOLD, Ansi.MAGENTA))
     _info(i18n.t("info.url"), paint(url, Ansi.BLUE))
@@ -604,7 +648,7 @@ def run_download(args) -> int:
             state["done"] = ctx.total_downloaded
             renderer.sample_speed(ctx.total_downloaded)
             state["speed_str"] = core.format_speed(
-                state["speed_bps"], args.speed_unit)
+                state["speed_bps"], speed_unit)
             state["remain"] = _fmt_eta(_eta_from(state, ctx))
             renderer.render()
             time.sleep(0.3)
@@ -633,27 +677,61 @@ def run_download(args) -> int:
         return 130
 
     if result["err"]:
+        _history_finish(record_uuid, "失败", ctx)
         print(paint(i18n.t("done.failed", reason=result["err"]), Ansi.RED))
-        return 1
+        return 5 if "磁盘可用空间不足" in str(result["err"]) else 1
 
     if ctx.download_completed:
+        _history_finish(record_uuid, "已完成", ctx)
         path = os.path.join(save_path, filename)
         elapsed = time.time() - start
         avg = ctx.file_total_size / elapsed if elapsed > 0 else 0
         renderer.finish_line()
         print(paint(i18n.t("done.success", path=path), Ansi.BOLD, Ansi.GREEN))
         _info(i18n.t("done.time_cost"), _fmt_eta(elapsed))
-        _info(i18n.t("done.avg_speed"), core.format_speed(avg, args.speed_unit))
+        _info(i18n.t("done.avg_speed"), core.format_speed(avg, speed_unit))
         return 0
 
     if ctx.pause_requested:
+        _history_finish(record_uuid, "已中断", ctx)
         renderer.finish_line()
         print(paint(i18n.t("done.aborted"), Ansi.YELLOW))
         return 130
 
+    if ctx.disk_space_error:
+        _history_finish(record_uuid, "失败", ctx)
+        renderer.finish_line()
+        print(paint(ctx.disk_space_error, Ansi.RED))
+        if ctx.ndf_progress_path and os.path.exists(ctx.ndf_progress_path):
+            print("  " + paint(i18n.t("log.pause_saved"), Ansi.DIM))
+        return 5
+
+    _history_finish(record_uuid, "失败", ctx)
     renderer.finish_line()
     print(paint(i18n.t("done.failed", reason=state["status"]), Ansi.RED))
     return 1
+
+
+# -------------------------- 下载记录 --------------------------
+def _history_start(url, filename, save_path, total_size) -> str:
+    try:
+        import DownloadHistory
+        rec = DownloadHistory.add_record(
+            url, filename, save_path, status="下载中",
+            file_size=int(total_size or 0), source="cli")
+        return rec.get("uuid", "")
+    except Exception:
+        return ""
+
+
+def _history_finish(record_uuid, status, ctx) -> None:
+    if not record_uuid:
+        return
+    try:
+        import DownloadHistory
+        DownloadHistory.update_record(record_uuid, status=status)
+    except Exception:
+        pass
 
 
 def _approx_speed(ctx, start):

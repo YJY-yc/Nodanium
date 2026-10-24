@@ -320,7 +320,7 @@ def _strip_quotes(value):
         return 1
 
 
-_CLI_SUBCOMMANDS = {"download", "help", "version"}
+_CLI_SUBCOMMANDS = {"download", "help", "version", "tui"}
 _CLI_GLOBAL_FLAGS = {"--lang", "--color", "-h", "--help", "-v", "--version"}
 
 _LEGACY_ONLY_FLAGS = {
@@ -683,8 +683,11 @@ if Adminchecker.is_admin():
     logging.info('已获得管理员权限')
 
 def get_lockfile_path():
-  
-    return os.path.join(tempfile.gettempdir(), f".{os.path.basename(sys.argv[0])}.lock")
+    try:
+        import StartupMgr
+        return StartupMgr.get_lock_path()
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), ".Nodanium.lock")
 
 def acquire_lock(lockfile):
     try:

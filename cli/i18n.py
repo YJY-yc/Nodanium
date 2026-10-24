@@ -5,7 +5,25 @@ import os
 import sys
 import configparser
 
-_LANG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lang")
+
+def _resolve_lang_dir() -> str:
+    """定位 lang 目录，源码运行与 Nuitka/PyInstaller 打包后均可找到。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [os.path.join(here, "lang")]
+    base = getattr(sys, "_MEIPASS", "") or os.path.dirname(
+        os.path.abspath(sys.argv[0] or sys.executable))
+    candidates.extend((
+        os.path.join(base, "cli", "lang"),
+        os.path.join(base, "lang"),
+        os.path.join(os.path.dirname(here), "lang"),
+    ))
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return candidates[0]
+
+
+_LANG_DIR = _resolve_lang_dir()
 _FORCED_LANG = ""
 _TABLE = {}
 _CURRENT = "en"

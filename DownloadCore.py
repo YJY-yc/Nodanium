@@ -49,8 +49,6 @@ class DownloadFrame(wx.Frame):
         self.completed_chunks = [False] * thread_count
         self.completion_callback = completion_callback 
 
-        # 依据下载 URL 解析站点式请求头（全局默认+命中的站点规则+默认UA），
-        # 供分片下载与探测一并完整发送。
         self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
         try:
             import SiteHeaders
