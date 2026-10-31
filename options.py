@@ -11,6 +11,7 @@ import glob
 import logging
 import ProcUtil
 import StartupMgr
+import Hotkeys
 
 config = {
     'font_size': 17,
@@ -1270,11 +1271,67 @@ def options(event):
         label="提示：Linux 下 .torrent 与 .ndf 共用同一桌面项。"), 0, wx.ALL, 8)
     config_sizer.Add(filetype_sizer, 0, wx.EXPAND | wx.ALL, 8)
 
+    # ========================== 键盘快捷键（仅 Windows） ==========================
+    hotkey_ctrls = {}
+    if Hotkeys.GlobalHotkeys().supported():
+        hotkey_sizer = wx.StaticBoxSizer(wx.StaticBox(config_panel, label="键盘快捷键"), wx.VERTICAL)
+
+        class HotkeyCtrl(wx.TextCtrl):
+            def __init__(self, parent, value):
+                super().__init__(parent, value=value, size=(CTRL_W + 60, -1),
+                                 style=wx.TE_READONLY | wx.TE_PROCESS_ENTER)
+                self.SetToolTip("点击后按下组合键完成录制，Backspace 清除")
+                self.Bind(wx.EVT_KEY_DOWN, self._on_key)
+
+            def _on_key(self, event):
+                if event.GetKeyCode() == wx.WXK_BACK:
+                    self.ChangeValue("")
+                    return
+                binding = Hotkeys.binding_from_event(event)
+                if binding is None:
+                    return
+                self.ChangeValue(Hotkeys.format_binding(binding))
+
+        hotkey_grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=8)
+        hotkey_grid.AddGrowableCol(1, 1)
+        current_bindings = Hotkeys.load_bindings()
+        for action_key, label, _default in Hotkeys.ACTIONS:
+            hotkey_grid.Add(wx.StaticText(config_panel, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+            ctrl = HotkeyCtrl(config_panel, current_bindings.get(action_key, ""))
+            hotkey_ctrls[action_key] = ctrl
+            hotkey_grid.Add(ctrl, 1, wx.EXPAND)
+        hotkey_sizer.Add(hotkey_grid, 0, wx.EXPAND | wx.ALL, 8)
+
+        hotkey_hint = wx.StaticText(
+            config_panel,
+            label="提示：快捷键为系统级，窗口最小化到托盘后仍生效；留空表示不启用。\n"
+                  "每项须包含 Ctrl、Alt、Shift 或 Win 之一。")
+        hotkey_hint.SetForegroundColour(wx.Colour(90, 90, 90))
+        hotkey_sizer.Add(hotkey_hint, 0, wx.ALL, 8)
+
+        config_sizer.Add(hotkey_sizer, 0, wx.EXPAND | wx.ALL, 8)
+
     notebook.AddPage(config_panel, "配置")
 
     def on_save_config(event):
         global Pos
         global fontname, FontSize
+
+        new_bindings = {}
+        if hotkey_ctrls:
+            for action_key, ctrl in hotkey_ctrls.items():
+                text = ctrl.GetValue().strip()
+                if text and not Hotkeys.is_valid(text):
+                    wx.MessageBox(f"{Hotkeys.ACTION_LABELS[action_key]} 的快捷键无效",
+                                  "提示", wx.OK | wx.ICON_WARNING)
+                    return
+                new_bindings[action_key] = text
+            conflicts = Hotkeys.find_conflicts(new_bindings)
+            if conflicts:
+                names = "、".join(f"{Hotkeys.ACTION_LABELS[a]} 与 {Hotkeys.ACTION_LABELS[b]}"
+                                 for a, b in conflicts)
+                wx.MessageBox(f"快捷键冲突：{names}", "提示", wx.OK | wx.ICON_WARNING)
+                return
 
         Pos = (pos_x_ctrl.GetValue(), pos_y_ctrl.GetValue())
 
@@ -1331,6 +1388,18 @@ def options(event):
             json.dump(disk_cfg, f, ensure_ascii=False, indent=4)
 
         save_plugin_config_file()
+
+        if hotkey_ctrls:
+            Hotkeys.save_bindings(new_bindings)
+            try:
+                import Window
+                Window.reload_hotkeys()
+                errors = Window.hotkey_errors()
+                if errors:
+                    wx.MessageBox("以下快捷键被系统或其他程序占用，未能注册：\n" + "\n".join(errors),
+                                  "提示", wx.OK | wx.ICON_WARNING)
+            except Exception as e:
+                logging.warning(f"重新注册快捷键失败: {e}")
 
         wx.MessageBox("设置已保存", "提示", wx.OK | wx.ICON_INFORMATION)
 

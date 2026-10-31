@@ -168,7 +168,6 @@ def MainPanel(parent):
     start_button.Bind(wx.EVT_BUTTON, on_start)
     stop_button.Bind(wx.EVT_BUTTON, on_stop)
     
-    # 设置面板的布局
     parent.SetSizer(panel_sizer)
     
     return parent

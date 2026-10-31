@@ -70,7 +70,7 @@ def _load_data():
 
 
 def _log(msg):
-    """把请求头解析结果同时输出到控制台（后台）和日志文件。"""
+
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     try:
         print(line)
@@ -86,7 +86,7 @@ def _log(msg):
 
 
 def save_data(data):
-    """将数据写回 site_headers.json"""
+
     path = os.path.join(get_data_folder(), CONFIG_NAME)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -98,7 +98,7 @@ def save_data(data):
 
 
 def new_rule(name="", domain="", **kwargs):
-    """创建一个新的站点规则字典"""
+
     rule = {
         "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, str(uuid.uuid4()))),
         "name": name,
@@ -112,7 +112,7 @@ def new_rule(name="", domain="", **kwargs):
 
 
 def _host_of(url):
-    """解析链接的主机名（含端口），失败返回空串"""
+
     url = (url or "").strip()
     m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]+)", url)
     if m:

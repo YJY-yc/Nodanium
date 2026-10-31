@@ -16,15 +16,7 @@ from FileIcon import get_file_icon, get_fallback_icon, THUMBNAIL_EXTENSIONS
 
 
 class RubberBandListCtrl(wx.ListCtrl):
-    """支持鼠标框选（橡皮筋多选）的 ListCtrl。
 
-    GTK 下的 wx.ListCtrl 原生不支持拖拽框选，这里用鼠标事件自行实现：在项目上/空白
-    处按住左键拖拽时绘制选择矩形，并把矩形内的行加入选择。Windows/MSW 行为一致。
-
-    注意：GTK 的 mouse motion 事件中按钮状态不可靠（LeftIsDown 常为 False），因此
-    自行用 DOWN/UP 事件维护按键状态，不依赖 event.LeftIsDown()。框选只在左键按下
-    并产生位移后启动，右键/中键绝不触发。
-    """
 
     DRAG_THRESHOLD = 4
 
@@ -2117,12 +2109,6 @@ def show_download_manager():
     app.MainLoop()
 
 def trigger_new_download(parent=None, prefill_url=None):
-    if parent is None:
-        app = wx.GetApp()
-        if app is not None:
-            parent = wx.GetActiveWindow()
-            if parent is None:
-                parent = app.GetTopWindow()
     try:
         lst = _download_list_ctrl
         img = _image_list_ctrl
@@ -2131,6 +2117,22 @@ def trigger_new_download(parent=None, prefill_url=None):
         img = None
     if lst is None or img is None:
         return
+    if parent is not None:
+        try:
+            if not parent.IsShown() or parent.IsIconized():
+                parent = None
+        except Exception:
+            parent = None
+    if parent is None:
+        app = wx.GetApp()
+        if app is not None:
+            active = wx.GetActiveWindow()
+            if active is not None:
+                parent = active
+            else:
+                top = app.GetTopWindow()
+                if top is not None and top.IsShown():
+                    parent = top
     on_new_download(parent, lst, img, prefill_url=prefill_url)
 
 

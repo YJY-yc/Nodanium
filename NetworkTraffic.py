@@ -4,10 +4,16 @@
 import wx
 import psutil
 import time
+import sys
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
 
 REFRESH_INTERVAL = 0.2  # 刷新间隔（秒）
 ONE_ROUND_BYTES = 50 * 1024 * 1024  # 1转对应50MB流量
 INDICATOR_WIDTH = 10  # 绿色指示块的宽度
+TOP_REFRESH_INTERVAL = 500  # 迷你窗口重新置顶间隔（毫秒）
 
 # 全局变量
 traffic_type = "上传和下载"  # 默认流量类型
@@ -411,7 +417,7 @@ def create_panel(parent):
     mini_button.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
     
     mini_button.SetMinSize((80, -1))
-    mini_button.Bind(wx.EVT_BUTTON, lambda e: create_mini_window(parent))
+    mini_button.Bind(wx.EVT_BUTTON, lambda e: show_mini_window(parent))
     control_sizer.Add(mini_button, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
     
     
@@ -565,17 +571,183 @@ def create_panel(parent):
 
     return panel
 
+
+# ---- 迷你窗口置顶 ----
+if sys.platform == "win32":
+    _HWND_TOPMOST = wintypes.HWND(-1)
+    _SWP_NOSIZE = 0x0001
+    _SWP_NOMOVE = 0x0002
+    _SWP_NOACTIVATE = 0x0010
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                     ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                     wintypes.UINT)
+    _user32.SetWindowPos.restype = wintypes.BOOL
+    _user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+    _user32.GetWindowLongW.restype = ctypes.c_long
+
+
+def apply_topmost(frame):
+    try:
+        if sys.platform != "win32":
+            frame.SetWindowStyle(frame.GetWindowStyle() | wx.STAY_ON_TOP)
+            return
+        hwnd = wintypes.HWND(int(frame.GetHandle()))
+        if _user32.GetWindowLongW(hwnd, -20) & 0x0008:
+            return
+        _user32.SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+                             _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE)
+    except Exception:
+        pass
+
+
+# ---- 无边框窗口拖动 ----
+def _screen_pos(event):
+    widget = event.GetEventObject()
+    return event.GetPosition() + widget.ClientToScreen(wx.Point(0, 0))
+
+
+_drag_state = {"active": None}
+
+
+class DragMoveMixin:
+    def _init_drag(self):
+        self._drag_origin = None
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_drag_start)
+        self.Bind(wx.EVT_MOTION, self._on_drag_move)
+        self.Bind(wx.EVT_LEFT_UP, self._on_drag_end)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self._on_drag_end)
+
+    def _on_drag_start(self, event):
+        frame = wx.GetTopLevelParent(self)
+        if frame is not None and isinstance(frame, DragFrame):
+            self._drag_origin = (_screen_pos(event), frame.GetPosition())
+            frame._dragging = True
+            _drag_state["active"] = frame
+            if not self.HasCapture():
+                self.CaptureMouse()
+        event.Skip()
+
+    def _on_drag_move(self, event):
+        if self._drag_origin is not None and event.LeftIsDown():
+            frame = wx.GetTopLevelParent(self)
+            if frame is not None:
+                start, origin = self._drag_origin
+                cur = _screen_pos(event)
+                target = wx.Point(origin.x + cur.x - start.x, origin.y + cur.y - start.y)
+                if target != frame.GetPosition():
+                    frame.SetPosition(target)
+                return
+        event.Skip()
+
+    def _on_drag_end(self, event):
+        if self._drag_origin is not None:
+            frame = wx.GetTopLevelParent(self)
+            if frame is not None and isinstance(frame, DragFrame):
+                frame._dragging = False
+                apply_topmost(frame)
+            if _drag_state["active"] is frame:
+                _drag_state["active"] = None
+            if self.HasCapture():
+                self.ReleaseMouse()
+        self._drag_origin = None
+        if event is not None:
+            event.Skip()
+
+
+class DragPanel(DragMoveMixin, wx.Panel):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._init_drag()
+
+
+class DragFrame(DragMoveMixin, wx.Frame):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dragging = False
+        self._init_drag()
+
+
+def bind_drag(widget):
+    widget._drag_origin = None
+    widget.Bind(wx.EVT_LEFT_DOWN, lambda e: DragMoveMixin._on_drag_start(widget, e))
+    widget.Bind(wx.EVT_MOTION, lambda e: DragMoveMixin._on_drag_move(widget, e))
+    widget.Bind(wx.EVT_LEFT_UP, lambda e: DragMoveMixin._on_drag_end(widget, e))
+
+
+class CloseButton(wx.Control):
+    def __init__(self, parent, size=(22, 22)):
+        super().__init__(parent, size=size, style=wx.BORDER_NONE)
+        self._hover = False
+        self._pressed = False
+        self.SetMinSize(size)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_SIZE, self._on_size)
+        self.Bind(wx.EVT_ENTER_WINDOW, self._on_enter)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self._on_leave)
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_down)
+        self.Bind(wx.EVT_LEFT_UP, self._on_up)
+
+    def _draw(self, dc):
+        width, height = self.GetClientSize()
+        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        dc.Clear()
+        if self._hover:
+            dc.SetBrush(wx.Brush(wx.Colour(220, 60, 60)))
+            dc.SetPen(wx.Pen(wx.Colour(220, 60, 60)))
+            dc.DrawCircle(width // 2, height // 2, min(width, height) // 2 - 1)
+        colour = wx.Colour(255, 255, 255) if self._hover else wx.Colour(90, 90, 90)
+        dc.SetPen(wx.Pen(colour, 2))
+        pad = 7
+        dc.DrawLine(pad, pad, width - pad, height - pad)
+        dc.DrawLine(width - pad, pad, pad, height - pad)
+
+    def _on_paint(self, event):
+        self._draw(wx.PaintDC(self))
+
+    def _on_size(self, event):
+        self.Refresh()
+        event.Skip()
+
+    def _on_enter(self, event):
+        self._hover = True
+        self.Refresh()
+        event.Skip()
+
+    def _on_leave(self, event):
+        self._hover = False
+        self._pressed = False
+        self.Refresh()
+        event.Skip()
+
+    def _on_down(self, event):
+        self._pressed = True
+        event.Skip()
+
+    def _on_up(self, event):
+        if self._pressed and self.GetClientRect().Contains(event.GetPosition()):
+            top = wx.GetTopLevelParent(self)
+            if top is not None:
+                top.Close()
+        self._pressed = False
+        event.Skip()
+
+
 def create_mini_window(parent):
     """创建迷你窗口"""
 
-    frame = wx.Frame(None, title="网络流量监控 - 独立窗口", size=(650, 250))
+    global mini_window
+
+    frame = DragFrame(None, title="网络流量监控 - 独立窗口", size=(300, 120),
+                      style=wx.FRAME_NO_TASKBAR | wx.BORDER_NONE)
     
 
-    panel = wx.Panel(frame)
+    panel = DragPanel(frame, size=(300, 120))
     main_sizer = wx.BoxSizer(wx.VERTICAL)
     
 
-    digit_panel = wx.Panel(panel)
+    digit_panel = DragPanel(panel)
     digit_panel.SetBackgroundColour(wx.Colour(240, 240, 240))
     digit_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
@@ -583,8 +755,8 @@ def create_mini_window(parent):
     digits = []
     for i in range(7):
         digit_label = wx.StaticText(digit_panel, label="0", style=wx.ALIGN_CENTER)
-        digit_label.SetMinSize((30, 50))
-        digit_label.SetFont(wx.Font(24, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        digit_label.SetMinSize((22, 36))
+        digit_label.SetFont(wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         if i < 5:  
             digit_label.SetForegroundColour(wx.Colour(0, 0, 0))
             digit_label.SetBackgroundColour(wx.Colour(255, 255, 200))
@@ -594,80 +766,101 @@ def create_mini_window(parent):
         
       
         digit_label.SetWindowStyle(digit_label.GetWindowStyle() | wx.BORDER_SIMPLE)
-        digit_sizer.Add(digit_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 2)
+        digit_sizer.Add(digit_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 1)
         digits.append(digit_label)
     
     digit_panel.SetSizer(digit_sizer)
-    main_sizer.Add(digit_panel, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+    main_sizer.Add(digit_panel, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 6)
     
 
     indicator_panel = SmoothIndicatorPanel(panel)
-    indicator_panel.SetMinSize((-1, 20))
-    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+    indicator_panel.SetMinSize((-1, 14))
+    bind_drag(indicator_panel)
+    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
     
 
-    control_panel = wx.Panel(panel)
+    control_panel = DragPanel(panel)
     control_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
 
     type_label = wx.StaticText(control_panel, label="流量类型:")
-    type_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-    control_sizer.Add(type_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+    type_label.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    control_sizer.Add(type_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 3)
     
     type_choices = ["上传和下载", "仅上传", "仅下载"]
-    type_combo = wx.ComboBox(control_panel, choices=type_choices, style=wx.CB_READONLY)
+    type_combo = wx.ComboBox(control_panel, choices=type_choices, style=wx.CB_READONLY | wx.CB_DROPDOWN)
     type_combo.SetSelection(0)
-    control_sizer.Add(type_combo, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
+    type_combo.SetMinSize((70, -1))
+    control_sizer.Add(type_combo, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
 
-    speed_label = wx.StaticText(control_panel, label="速率: 0.00 MB/s")
-    speed_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+    speed_label = wx.StaticText(control_panel, label="速率: 0.0 MB/s")
+    speed_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
     speed_label.SetForegroundColour(wx.Colour(0, 100, 0))
-    control_sizer.Add(speed_label, 0, wx.ALIGN_CENTER_VERTICAL)
+    control_sizer.Add(speed_label, 1, wx.ALIGN_CENTER_VERTICAL)
     
     control_sizer.AddStretchSpacer(1)
     
-
-    close_button = wx.Button(control_panel, label="关闭小窗")
-    close_button.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-    close_button.SetBackgroundColour(wx.Colour(220, 100, 100))
- 
-    close_button.SetMinSize((80, -1))
-    close_button.Bind(wx.EVT_BUTTON, lambda e: frame.Close())
-    control_sizer.Add(close_button, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-    
     control_panel.SetSizer(control_sizer)
-    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.ALL, 10)
+    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
     
 
-    status_panel = wx.Panel(panel)
+    close_button = CloseButton(panel, size=(18, 18))
+    
+
+    status_panel = DragPanel(panel)
     status_sizer = wx.BoxSizer(wx.HORIZONTAL)
     
 
     upload_info = wx.StaticText(status_panel, label="上传: 0.00 GB")
-    upload_info.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    upload_info.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     upload_info.SetForegroundColour(wx.Colour(0, 100, 200))
-    status_sizer.Add(upload_info, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
+    status_sizer.Add(upload_info, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
     
 
     download_info = wx.StaticText(status_panel, label="下载: 0.00 GB")
-    download_info.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    download_info.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     download_info.SetForegroundColour(wx.Colour(200, 100, 0))
     status_sizer.Add(download_info, 0, wx.ALIGN_CENTER_VERTICAL)
     
     status_sizer.AddStretchSpacer(1)
 
     rounds_label = wx.StaticText(status_panel, label="当前圈数: 0")
-    rounds_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    rounds_label.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     rounds_label.SetForegroundColour(wx.Colour(0, 150, 0))
     status_sizer.Add(rounds_label, 0, wx.ALIGN_CENTER_VERTICAL)
     
     status_panel.SetSizer(status_sizer)
-    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
     
     panel.SetSizer(main_sizer)
+
+    for _widget in digits + [upload_info, download_info, rounds_label]:
+        bind_drag(_widget)
   
     frame.SetWindowStyle(frame.GetWindowStyle() | wx.STAY_ON_TOP)
-    
+
+    top_state = {"running": True, "scheduled": False}
+
+    def refresh_topmost():
+        if not top_state["running"] or top_state["scheduled"]:
+            return
+        top_state["scheduled"] = True
+
+        def _run():
+            top_state["scheduled"] = False
+            if not top_state["running"]:
+                return
+            try:
+                if not frame.IsShown():
+                    return
+            except RuntimeError:
+                return
+            if not frame._dragging:
+                apply_topmost(frame)
+            wx.CallLater(TOP_REFRESH_INTERVAL, refresh_topmost)
+
+        wx.CallLater(0, _run)
+
   
     def update_mini_display():
         """更新迷你窗口显示"""
@@ -757,19 +950,57 @@ def create_mini_window(parent):
     
 
     def on_close(event):
-
+        global mini_window
+        top_state["running"] = False
         if 'indicator_panel' in locals():
             indicator_panel.stop_timer()
         
 
         frame.Destroy()
+        mini_window = None
     
     frame.Bind(wx.EVT_CLOSE, on_close)
+
+    def relayout():
+        try:
+            size = frame.GetClientSize()
+            panel.SetSize(size)
+            panel.Layout()
+            frame.Layout()
+            bw, bh = close_button.GetSize()
+            close_button.SetPosition(wx.Point(size.width - bw - 4, 4))
+            close_button.Raise()
+        except RuntimeError:
+            pass
+
+    frame.Bind(wx.EVT_SIZE, lambda e: (e.Skip(), relayout()))
     
  
     wx.CallLater(100, update_mini_display)
+    wx.CallLater(500, refresh_topmost)
     
     frame.Show()
+    relayout()
+    mini_window = frame
+
+
+def show_mini_window(parent=None):
+    """显示迷你窗口；已存在则复用并置顶，不重复创建"""
+    global mini_window
+    frame_ = mini_window
+    if frame_ is not None:
+        try:
+            if frame_ and not frame_.IsBeingDeleted():
+                if not frame_.IsShown():
+                    frame_.Show()
+                apply_topmost(frame_)
+                frame_.Raise()
+                return frame_
+        except RuntimeError:
+            pass
+        mini_window = None
+    create_mini_window(parent)
+    return mini_window
 
 def get_system_total_traffic_summary():
     """获取系统流量统计摘要"""

@@ -216,6 +216,11 @@ except ImportError as e:
     print(f"导入 options 失败: {e}")
 
 try:
+    import Hotkeys
+except ImportError as e:
+    print(f"导入 Hotkeys 失败: {e}")
+
+try:
     import FileServer
 except ImportError as e:
     print(f"导入 FileServer 失败: {e}")
@@ -273,6 +278,9 @@ try:
 except Exception as e:
     print(f"读取插件目录时出错: {e}")
     logging.info(f"读取插件目录时出错: {e}")
+finally:
+    if plugins_dir in sys.path:
+        sys.path.remove(plugins_dir)
 #=======================================
 
 
@@ -435,14 +443,97 @@ def _is_download_url(text):
 
 
 def _clipboard_new_download(frame):
-    """托盘菜单‘从剪贴板新建下载’时的动作：
-    若剪贴板为下载链接则自动填入，否则仅打开新建下载窗口。"""
     try:
         prefill_url = _clipboard_url()
         wx.CallAfter(lambda: DownloadUI.trigger_new_download(frame, prefill_url=prefill_url))
     except Exception as e:
         print(f"从剪贴板新建下载错误: {e}")
         logging.error(f"从剪贴板新建下载错误: {e}")
+
+
+#====================== 全局快捷键 ======================
+
+_hotkeys = None
+_hotkey_frame = None
+
+
+def _ensure_frame_visible(frame):
+    if not frame.IsShown():
+        frame.Show()
+    if frame.IsIconized():
+        frame.Iconize(False)
+    frame.Raise()
+
+
+def _hotkey_clipboard_download():
+    frame_ = _hotkey_frame
+    if frame_ is None:
+        return
+    prefill_url = _clipboard_url()
+
+    def run():
+        _ensure_frame_visible(frame_)
+        DownloadUI.trigger_new_download(frame_, prefill_url=prefill_url)
+    wx.CallAfter(run)
+
+
+def _hotkey_new_download():
+    frame_ = _hotkey_frame
+    if frame_ is None:
+        return
+
+    def run():
+        _ensure_frame_visible(frame_)
+        DownloadUI.trigger_new_download(frame_)
+    wx.CallAfter(run)
+
+
+def _hotkey_toggle_window():
+    frame_ = _hotkey_frame
+    if frame_ is None:
+        return
+
+    def toggle():
+        if frame_.IsShown() and not frame_.IsIconized():
+            frame_.Hide()
+            return
+        _ensure_frame_visible(frame_)
+    wx.CallAfter(toggle)
+
+
+def _hotkey_traffic_mini():
+    frame_ = _hotkey_frame
+
+    def run():
+        try:
+            import NetworkTraffic
+            NetworkTraffic.show_mini_window(frame_)
+        except Exception as e:
+            logging.error(f"显示流量转盘小窗失败: {e}")
+    wx.CallAfter(run)
+
+
+_HOTKEY_HANDLERS = {
+    "hotkey_new_download": _hotkey_new_download,
+    "hotkey_clipboard_download": _hotkey_clipboard_download,
+    "hotkey_toggle_window": _hotkey_toggle_window,
+    "hotkey_traffic_mini": _hotkey_traffic_mini,
+}
+
+
+def reload_hotkeys():
+    if _hotkeys is None or not _hotkeys.supported():
+        return
+    try:
+        _hotkeys.register(Hotkeys.load_bindings())
+    except Exception as e:
+        logging.error(f"注册全局快捷键失败: {e}")
+
+
+def hotkey_errors():
+    if _hotkeys is None:
+        return []
+    return _hotkeys.errors()
 
 
 def _startup_aria2_and_ready():
@@ -1004,9 +1095,15 @@ def Window(silence=False):
     il = wx.ImageList(32, 32)
     _icon_cache = {}
 
+    def _nav_bitmap(path):
+        bmp = wx.Bitmap(path)
+        if bmp.IsOk() and (bmp.GetWidth() != 32 or bmp.GetHeight() != 32):
+            bmp = wx.Bitmap(wx.Image(path, wx.BITMAP_TYPE_PNG).Scale(32, 32, wx.IMAGE_QUALITY_HIGH))
+        return bmp
+
     def _icon_id(path):
         if path not in _icon_cache:
-            _icon_cache[path] = il.Add(wx.Bitmap(path))
+            _icon_cache[path] = il.Add(_nav_bitmap(path))
         return _icon_cache[path]
 
     icon = wx.Icon('icons/home.png', wx.BITMAP_TYPE_PNG)
@@ -1786,6 +1883,14 @@ def Window(silence=False):
 
 
     tray = create_tray_icon(frame)
+
+    global _hotkeys, _hotkey_frame
+    _hotkey_frame = frame
+    _hotkeys = Hotkeys.GlobalHotkeys()
+    if _hotkeys.supported():
+        for action_key, handler in _HOTKEY_HANDLERS.items():
+            _hotkeys.set_callback(action_key, handler)
+        reload_hotkeys()
 
     if silence:
         # 静默模式：只创建托盘，不显示窗口
