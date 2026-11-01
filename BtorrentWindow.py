@@ -274,6 +274,9 @@ class BtDownloadFrame(wx.Frame):
         self.pause_btn.Disable()
         self.cancel_btn.Disable()
 
+    def shutdown_targets(self):
+        return []
+
     def on_close(self, evt):
         self._closing = True
         try:

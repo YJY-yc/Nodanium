@@ -32,12 +32,23 @@ def validate_hosts_entry(ip: str, hostname: str) -> str:
         raise ValueError("主机名格式不正确: %s" % hostname)
     return hosts_line_for(ip, hostname)
 
+def resolve_hosts_path() -> str:
+    if sys_type != "Windows":
+        return HOSTS_PATH
+    win_dir = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return os.path.join(win_dir, "System32", "drivers", "etc", "hosts")
+
+
 def read_hosts_text() -> str:
-    try:
-        with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace", newline="") as f:
-            return f.read()
-    except FileNotFoundError:
-        return ""
+    for path in (HOSTS_PATH, resolve_hosts_path()):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            raise
+    return ""
 
 
 def detect_newline(text: str) -> str:
@@ -134,19 +145,24 @@ def write_hosts_with_privileges(content: str) -> None:
 
     data = content.encode("utf-8")
 
-    try:
-        with open(HOSTS_PATH, "r+b") as f:
-            f.seek(0)
-            f.write(data)
-            f.truncate()
-        return
-    except PermissionError:
-        pass
-    except OSError:
-        pass
+    for path in (HOSTS_PATH, resolve_hosts_path()):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r+b") as f:
+                f.seek(0)
+                f.write(data)
+                f.truncate()
+            return
+        except PermissionError:
+            pass
+        except OSError:
+            pass
 
     if sys_type == "Windows":
-        raise PermissionError("需要管理员权限才能修改 hosts 文件，请以管理员身份重新启动 Nodanium")
+        raise PermissionError(
+            "无法写入 hosts 文件 %s，请以管理员身份重新启动 Nodanium" % resolve_hosts_path()
+        )
 
     os.makedirs(os.path.dirname(HOSTS_PATH), exist_ok=True)
     tmp_file = HOSTS_PATH + ".nodanium.tmp"
@@ -554,9 +570,16 @@ def init_dns_tab(p):
                     current_record = {}
         
         return records
+    parse_warning = []
+
     def parse_hosts_file():
         records = []
-        for raw in read_hosts_text().splitlines():
+        try:
+            text = read_hosts_text()
+        except PermissionError:
+            parse_warning.append(HOSTS_PATH)
+            return records
+        for raw in text.splitlines():
             line = raw.split('#', 1)[0].strip()
             if not line:
                 continue
@@ -576,6 +599,13 @@ def init_dns_tab(p):
             idx = dns_list.InsertItem(dns_list.GetItemCount(), record.get('name', ''))
             dns_list.SetItem(idx, 1, record.get('data', ''))
             dns_list.SetItem(idx, 2, record.get('ttl', ''))
+        if parse_warning:
+            wx.MessageBox(
+                "读取hosts文件失败，缺少读取权限：\n%s\n请以管理员身份重新启动 Nodanium" % parse_warning[0],
+                "提示",
+                wx.OK | wx.ICON_WARNING,
+            )
+            parse_warning.clear()
 
     def on_flush_dns_cache(event=None):
         try:

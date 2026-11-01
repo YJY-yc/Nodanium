@@ -72,7 +72,11 @@ def restart_as_elevated():
             wx.MessageBox("未找到 pkexec，请手动以 root 运行。", "错误", wx.OK | wx.ICON_ERROR)
             return
     logging.info(f'以特权身份重启: {exe} {args}')
-    sys.exit(0)
+    try:
+        import Shutdown as _Shutdown
+        _Shutdown.request_restart(frame)
+    except Exception:
+        sys.exit(0)
 
 
 if sys_type == "Windows":
@@ -1007,7 +1011,6 @@ def create_tray_icon(frame):
     def create_menu():
         menu = wx.Menu()
         
-        
  
         show_item = menu.Append(wx.ID_ANY, "显示窗口")
         hid_item = menu.Append(wx.ID_ANY, "隐藏窗口")
@@ -1026,8 +1029,7 @@ def create_tray_icon(frame):
             frame.Iconize(False)
             
         def on_exit(event):
-            tray.Destroy()
-            frame.Destroy()
+            _exit_program()
             
         def on_hid(event):
             frame.Hide()
@@ -1074,6 +1076,11 @@ def create_tray_icon(frame):
 
 
     return tray  
+def _exit_program():
+    logging.info('程序退出')
+    import Shutdown
+    Shutdown.request_exit(frame)
+
 def Window(silence=False):
     global url_text_1, filename_text_1,check
     global url_text, filename_text, thread_choice, packet_size_choice, download_button_2
@@ -1114,7 +1121,7 @@ def Window(silence=False):
     else:
         frame = wx.Frame(None, title="Nodanium", size=windowPos)
     
-   
+    frame.timer = wx.Timer(frame)
 
     def on_close(event):
         frame.Hide()
@@ -1664,8 +1671,7 @@ def Window(silence=False):
     
 
     def on_exit(event):
-        logging.info('程序退出')
-        sys.exit(0)
+        _exit_program()
     
     exit_btn = wx.Button(right_panel, label="退出程序")
     exit_btn.SetBackgroundColour(wx.Colour(230, 230, 230))
@@ -1755,10 +1761,10 @@ def Window(silence=False):
                 info = f.read()
             wx.CallAfter(update_text.SetValue, info if info.strip() else "暂无更新信息")
         except FileNotFoundError:
-            wx.CallAfter(update_text.SetValue, "错误：info.md文件未找到")
+            wx.CallAfter(update_text.SetValue, "Nodanium")
             logging.error("错误：info.md文件未找到")    
         except PermissionError:
-            wx.CallAfter(update_text.SetValue, "错误：没有权限读取文件")
+            wx.CallAfter(update_text.SetValue, "Nodanium")
             logging.error("错误：没有权限读取文件")
         except Exception as e:
             wx.CallAfter(update_text.SetValue, f"获取信息失败: {str(e)}")
@@ -1771,10 +1777,10 @@ def Window(silence=False):
                 info = f.read()
             wx.CallAfter(update_text.SetValue, info if info.strip() else "暂无更新信息")
         except FileNotFoundError:
-            wx.CallAfter(update_text.SetValue, "错误：info.md文件未找到")
+            wx.CallAfter(update_text.SetValue, "Nodanium")
             logging.error("错误：info.md文件未找到")    
         except PermissionError:
-            wx.CallAfter(update_text.SetValue, "错误：没有权限读取文件")
+            wx.CallAfter(update_text.SetValue, "Nodanium")
             logging.error("错误：没有权限读取文件")
         except Exception as e:
             wx.CallAfter(update_text.SetValue, f"获取信息失败: {str(e)}")
@@ -1884,9 +1890,14 @@ def Window(silence=False):
 
     tray = create_tray_icon(frame)
 
+    import Shutdown as _Shutdown
+    _Shutdown.register("tray", tray)
+    _Shutdown.set_confirm_ui(not silence)
+
     global _hotkeys, _hotkey_frame
     _hotkey_frame = frame
     _hotkeys = Hotkeys.GlobalHotkeys()
+    _Shutdown.register("hotkeys", _hotkeys)
     if _hotkeys.supported():
         for action_key, handler in _HOTKEY_HANDLERS.items():
             _hotkeys.set_callback(action_key, handler)
@@ -1924,3 +1935,6 @@ def Window(silence=False):
     wx.CallAfter(_force_first_paint)
 
     app.MainLoop()
+
+    if _Shutdown.is_stopping() or _Shutdown.is_finished():
+        _Shutdown.finish(time.time() + _Shutdown.GRACE_SECONDS)

@@ -46,6 +46,60 @@ class RangeUnsupported(Exception):
     pass
 
 
+# -------------------------- 退出清理登记表 --------------------------
+_ctx_registry = []
+_registry_lock = threading.RLock()
+
+
+def register_context(ctx) -> None:
+    with _registry_lock:
+        if ctx not in _ctx_registry:
+            _ctx_registry.append(ctx)
+
+
+def unregister_context(ctx) -> None:
+    with _registry_lock:
+        if ctx in _ctx_registry:
+            _ctx_registry.remove(ctx)
+
+
+def snapshot_contexts() -> list:
+    with _registry_lock:
+        return list(_ctx_registry)
+
+
+def register_thread(thread) -> None:
+    try:
+        thread._nd_registered = True
+    except Exception:
+        pass
+
+
+def snapshot_threads() -> list:
+    with _registry_lock:
+        return [t for t in threading.enumerate() if getattr(t, "_nd_registered", False)]
+
+
+def _download_thread_idle() -> int:
+    count = 0
+    for ctx in snapshot_contexts():
+        stop_ev = getattr(ctx, 'stop_event', None)
+        if stop_ev is not None and stop_ev.is_set():
+            continue
+        if ctx.download_completed:
+            continue
+        chunks = ctx.chunk_task_list or []
+        if chunks and all(t.finished for t in chunks):
+            continue
+        count += 1
+    return count
+try:
+    import Shutdown as _Shutdown
+    _Shutdown.add_activity_source(_download_thread_idle)
+except Exception:
+    pass
+
+
 def get_download_process_dir():
     """获取下载进度文件的缓存目录（跨平台）。
     进度 JSON 统一存放在程序数据缓存目录下的 DownloadProcess 子目录，
@@ -914,6 +968,12 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
         except Exception as e:
             ui_push_log(ctx, f"保存断点进度失败: {str(e)}")
 
+    try:
+        import Shutdown as _SD
+        _shutting_down = _SD.is_started()
+    except Exception:
+        _shutting_down = False
+
     def background_cleanup():
         try:
             ctx.task_queue.join()
@@ -927,6 +987,10 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
     threading.Thread(target=background_cleanup, daemon=True).start()
     
   
+    if _shutting_down:
+        unregister_context(ctx)
+        return
+
     if ctx.pause_requested and not all(t.finished for t in ctx.chunk_task_list):
         try:
             dump_progress_json(ctx)
@@ -1066,6 +1130,7 @@ def schedule_download_task(ctx: DownloadCtx) -> None:
             wx.CallAfter(ctx.completion_callback, False, final_file_size, ctx.uuid)
     
     ui_push_global_status(ctx, "调度线程退出")
+    unregister_context(ctx)
 
 # -------------------------- 初始化下载上下文 --------------------------
 def init_download_context(
@@ -1122,6 +1187,7 @@ def init_download_context(
     ctx.disk_space_error = ""
     ctx.disk_lock = threading.Lock()
     ctx.last_disk_check_ts = 0.0
+    register_context(ctx)
     return ctx
 
 def _probe_with_requests(url: str, headers: Dict[str, str], disable_ssl: bool,
@@ -1345,7 +1411,12 @@ class DownloadCompleteDialog(wx.Dialog):
         self.start_schedule_thread()
         self.Centre()
         self.Show()
+
+    def shutdown_targets(self):
+        return []
+
 # -------------------------- 下载主窗口UI（无业务逻辑，仅渲染） --------------------------
+
 class DownloadFrame(wx.Frame):
     def __init__(self, ctx: DownloadCtx):
         super().__init__(None, title=f"下载 - {ctx.filename}", size=(500, 400))
@@ -1960,6 +2031,9 @@ class DownloadFrame(wx.Frame):
         self.Close()
 
 
+    def shutdown_targets(self):
+        return []
+
     def on_window_close(self, event):
         """窗口关闭处理"""
         ctx = self.ctx
@@ -1990,6 +2064,19 @@ class DownloadFrame(wx.Frame):
         if ctx.stop_event:
             ctx.stop_event.set()
             kill_active_curls(ctx)
+
+        try:
+            import Shutdown as _SD
+            if _SD.is_started():
+                if ctx.completion_callback:
+                    try:
+                        ctx.completion_callback(success=False, size=0)
+                    except Exception:
+                        pass
+                self.Destroy()
+                return
+        except Exception:
+            pass
 
         if ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
             dlg = wx.MessageDialog(
@@ -2037,8 +2124,13 @@ class DownloadFrame(wx.Frame):
             shutil.rmtree(ctx.ndf_extracted_dir, ignore_errors=True)
             ctx.ndf_extracted_dir = ""
 
-       
-        if ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
+        try:
+            import Shutdown as _SD
+            _quitting = _SD.is_started()
+        except Exception:
+            _quitting = False
+
+        if not _quitting and ctx.original_ndf_path and os.path.exists(ctx.original_ndf_path):
             dlg = wx.MessageDialog(
                 self,
                 f"下载完成！是否删除原 NDF 文件？\n\n"
@@ -2209,6 +2301,7 @@ class DownloadFrame(wx.Frame):
 
         download_thread = threading.Thread(target=schedule_download_task, args=(self.ctx,))
         download_thread.daemon = True
+        register_thread(download_thread)
         download_thread.start()
 # -------------------------- 对外唯一入口函数 Download --------------------------
 def Download(

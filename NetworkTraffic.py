@@ -344,7 +344,7 @@ def create_panel(parent):
 
     indicator_panel = SmoothIndicatorPanel(panel)
     indicator_panel.SetMinSize((-1, 25))
-    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.ALL, 10)
+    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
 
     display_panel = wx.Panel(panel)
     display_panel.SetBackgroundColour(wx.Colour(50, 50, 50))
@@ -427,7 +427,7 @@ def create_panel(parent):
     control_sizer.Add(total_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
     
     control_panel.SetSizer(control_sizer)
-    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.ALL, 10)
+    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 4)
     
    
     status_panel = wx.Panel(panel)
@@ -454,8 +454,7 @@ def create_panel(parent):
     status_sizer.Add(rounds_label, 0, wx.ALIGN_CENTER_VERTICAL)
     
     status_panel.SetSizer(status_sizer)
-    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-    
+    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 2)
     panel.SetSizer(main_sizer)
     
 
@@ -602,30 +601,64 @@ def apply_topmost(frame):
 
 
 # ---- 无边框窗口拖动 ----
+DRAG_THRESHOLD = 4
+
+_BUTTON_HOLDERS = (wx.Button, wx.ToggleButton, wx.BitmapButton, wx.ComboBox)
+
+
 def _screen_pos(event):
     widget = event.GetEventObject()
     return event.GetPosition() + widget.ClientToScreen(wx.Point(0, 0))
 
 
-_drag_state = {"active": None}
+def _has_button_in_path(widget, top):
+    node = widget
+    while node is not None:
+        if isinstance(node, _BUTTON_HOLDERS) or isinstance(node, CloseButton):
+            return True
+        if node is top:
+            break
+        node = node.GetParent()
+    return False
+
+
+_drag_state = {"active": None, "owner": None}
 
 
 class DragMoveMixin:
+    def _reset_drag(self):
+        targets = [self]
+        queue = list(self.GetChildren())
+        while queue:
+            node = queue.pop()
+            if hasattr(node, "_drag_origin"):
+                targets.append(node)
+            queue.extend(node.GetChildren())
+        for node in targets:
+            node._drag_origin = None
+            node._drag_started = False
+            if node.HasCapture():
+                node.ReleaseMouse()
+
     def _init_drag(self):
         self._drag_origin = None
+        self._drag_started = False
         self.Bind(wx.EVT_LEFT_DOWN, self._on_drag_start)
         self.Bind(wx.EVT_MOTION, self._on_drag_move)
         self.Bind(wx.EVT_LEFT_UP, self._on_drag_end)
-        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self._on_drag_end)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self._on_capture_lost)
 
     def _on_drag_start(self, event):
+        _finish_drag()
         frame = wx.GetTopLevelParent(self)
-        if frame is not None and isinstance(frame, DragFrame):
+        if (frame is not None and isinstance(frame, DragFrame)
+                and not _has_button_in_path(self, frame)):
             self._drag_origin = (_screen_pos(event), frame.GetPosition())
+            self._drag_started = False
             frame._dragging = True
             _drag_state["active"] = frame
-            if not self.HasCapture():
-                self.CaptureMouse()
+            _drag_state["owner"] = self
+            self.CaptureMouse()
         event.Skip()
 
     def _on_drag_move(self, event):
@@ -634,25 +667,37 @@ class DragMoveMixin:
             if frame is not None:
                 start, origin = self._drag_origin
                 cur = _screen_pos(event)
-                target = wx.Point(origin.x + cur.x - start.x, origin.y + cur.y - start.y)
+                dx = cur.x - start.x
+                dy = cur.y - start.y
+                if not self._drag_started:
+                    if abs(dx) < DRAG_THRESHOLD and abs(dy) < DRAG_THRESHOLD:
+                        return
+                    self._drag_started = True
+                target = wx.Point(origin.x + dx, origin.y + dy)
                 if target != frame.GetPosition():
                     frame.SetPosition(target)
                 return
         event.Skip()
 
     def _on_drag_end(self, event):
-        if self._drag_origin is not None:
-            frame = wx.GetTopLevelParent(self)
-            if frame is not None and isinstance(frame, DragFrame):
-                frame._dragging = False
-                apply_topmost(frame)
-            if _drag_state["active"] is frame:
-                _drag_state["active"] = None
-            if self.HasCapture():
-                self.ReleaseMouse()
-        self._drag_origin = None
+        _finish_drag()
         if event is not None:
             event.Skip()
+
+    def _on_capture_lost(self, event):
+        if _drag_state["active"] is not None:
+            _finish_drag(release=False)
+
+
+def _finish_drag(release=True):
+    active = _drag_state["active"]
+    _drag_state["active"] = None
+    _drag_state["owner"] = None
+    if active is not None:
+        active._reset_drag()
+        active._dragging = False
+        if release:
+            apply_topmost(active)
 
 
 class DragPanel(DragMoveMixin, wx.Panel):
@@ -670,9 +715,12 @@ class DragFrame(DragMoveMixin, wx.Frame):
 
 def bind_drag(widget):
     widget._drag_origin = None
+    widget._drag_started = False
     widget.Bind(wx.EVT_LEFT_DOWN, lambda e: DragMoveMixin._on_drag_start(widget, e))
     widget.Bind(wx.EVT_MOTION, lambda e: DragMoveMixin._on_drag_move(widget, e))
     widget.Bind(wx.EVT_LEFT_UP, lambda e: DragMoveMixin._on_drag_end(widget, e))
+    widget.Bind(wx.EVT_MOUSE_CAPTURE_LOST, lambda e: DragMoveMixin._on_capture_lost(widget, e))
+
 
 
 class CloseButton(wx.Control):
@@ -681,6 +729,8 @@ class CloseButton(wx.Control):
         self._hover = False
         self._pressed = False
         self.SetMinSize(size)
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.SetToolTip("关闭小窗")
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self.Bind(wx.EVT_SIZE, self._on_size)
@@ -691,17 +741,20 @@ class CloseButton(wx.Control):
 
     def _draw(self, dc):
         width, height = self.GetClientSize()
-        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
         dc.Clear()
+        pad = 5
+        pen_width = 2
         if self._hover:
-            dc.SetBrush(wx.Brush(wx.Colour(220, 60, 60)))
-            dc.SetPen(wx.Pen(wx.Colour(220, 60, 60)))
-            dc.DrawCircle(width // 2, height // 2, min(width, height) // 2 - 1)
-        colour = wx.Colour(255, 255, 255) if self._hover else wx.Colour(90, 90, 90)
-        dc.SetPen(wx.Pen(colour, 2))
-        pad = 7
-        dc.DrawLine(pad, pad, width - pad, height - pad)
-        dc.DrawLine(width - pad, pad, pad, height - pad)
+            dc.SetPen(wx.Pen(wx.Colour(220, 60, 60), 1))
+            dc.DrawLine(pad, pad, width - pad, height - pad)
+            dc.DrawLine(width - pad, pad, pad, height - pad)
+            pen_width = 3
+        colour = wx.Colour(220, 60, 60) if self._hover else wx.Colour(90, 90, 90)
+        dc.SetPen(wx.Pen(colour, pen_width))
+        dc.DrawLine(pad - 1, pad - 1, width - pad + 1, height - pad + 1)
+        dc.DrawLine(width - pad + 1, pad - 1, pad - 1, height - pad + 1)
+    
 
     def _on_paint(self, event):
         self._draw(wx.PaintDC(self))
@@ -739,14 +792,15 @@ def create_mini_window(parent):
 
     global mini_window
 
-    frame = DragFrame(None, title="网络流量监控 - 独立窗口", size=(300, 120),
+    frame = DragFrame(None, title="网络流量监控", size=(320, 116),
                       style=wx.FRAME_NO_TASKBAR | wx.BORDER_NONE)
-    
 
-    panel = DragPanel(frame, size=(300, 120))
+    panel = DragPanel(frame, size=(320, 116))
+    panel.SetBackgroundColour(wx.Colour(240, 240, 240))
     main_sizer = wx.BoxSizer(wx.VERTICAL)
     
 
+    close_button = CloseButton(panel, size=(22, 22))
     digit_panel = DragPanel(panel)
     digit_panel.SetBackgroundColour(wx.Colour(240, 240, 240))
     digit_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -770,13 +824,16 @@ def create_mini_window(parent):
         digits.append(digit_label)
     
     digit_panel.SetSizer(digit_sizer)
-    main_sizer.Add(digit_panel, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 6)
-    
+    top_bar = wx.BoxSizer(wx.HORIZONTAL)
+    top_bar.AddSpacer(4)
+    top_bar.Add(digit_panel, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+    top_bar.Add(close_button, 0, wx.ALIGN_TOP | wx.RIGHT, 4)
+    main_sizer.Add(top_bar, 0, wx.EXPAND)
 
     indicator_panel = SmoothIndicatorPanel(panel)
     indicator_panel.SetMinSize((-1, 14))
     bind_drag(indicator_panel)
-    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+    main_sizer.Add(indicator_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
     
 
     control_panel = DragPanel(panel)
@@ -788,9 +845,9 @@ def create_mini_window(parent):
     control_sizer.Add(type_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 3)
     
     type_choices = ["上传和下载", "仅上传", "仅下载"]
-    type_combo = wx.ComboBox(control_panel, choices=type_choices, style=wx.CB_READONLY | wx.CB_DROPDOWN)
+    type_combo = wx.ComboBox(control_panel, choices=type_choices, style=wx.CB_READONLY)
     type_combo.SetSelection(0)
-    type_combo.SetMinSize((70, -1))
+    type_combo.SetMinSize((120, -1))
     control_sizer.Add(type_combo, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
 
     speed_label = wx.StaticText(control_panel, label="速率: 0.0 MB/s")
@@ -801,10 +858,7 @@ def create_mini_window(parent):
     control_sizer.AddStretchSpacer(1)
     
     control_panel.SetSizer(control_sizer)
-    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
-    
-
-    close_button = CloseButton(panel, size=(18, 18))
+    main_sizer.Add(control_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 4)
     
 
     status_panel = DragPanel(panel)
@@ -830,8 +884,8 @@ def create_mini_window(parent):
     status_sizer.Add(rounds_label, 0, wx.ALIGN_CENTER_VERTICAL)
     
     status_panel.SetSizer(status_sizer)
-    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
-    
+    main_sizer.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT)
+
     panel.SetSizer(main_sizer)
 
     for _widget in digits + [upload_info, download_info, rounds_label]:
@@ -952,12 +1006,13 @@ def create_mini_window(parent):
     def on_close(event):
         global mini_window
         top_state["running"] = False
-        if 'indicator_panel' in locals():
-            indicator_panel.stop_timer()
-        
-
+        indicator_panel.stop_timer()
+        if _drag_state["active"] is frame:
+            _finish_drag()
+        if mini_window is frame:
+            mini_window = None
+        event.Skip()
         frame.Destroy()
-        mini_window = None
     
     frame.Bind(wx.EVT_CLOSE, on_close)
 
@@ -967,8 +1022,6 @@ def create_mini_window(parent):
             panel.SetSize(size)
             panel.Layout()
             frame.Layout()
-            bw, bh = close_button.GetSize()
-            close_button.SetPosition(wx.Point(size.width - bw - 4, 4))
             close_button.Raise()
         except RuntimeError:
             pass
@@ -981,6 +1034,7 @@ def create_mini_window(parent):
     
     frame.Show()
     relayout()
+    wx.CallLater(0, relayout)
     mini_window = frame
 
 
