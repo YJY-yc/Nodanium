@@ -863,6 +863,11 @@ def _get_data_folder():
 
 
 
+_OPTIONAL_DEPS = {
+    "scapy": ("scapy", "pip install --user scapy"),
+}
+
+
 _REQUIRED_DEPS = {
     "wx": "wxPython",
     "psutil": "psutil",
@@ -937,6 +942,17 @@ def _check_dependencies():
     return missing
 
 
+def _check_optional_dependencies():
+    import importlib
+    missing = []
+    for mod, (label, hint) in _OPTIONAL_DEPS.items():
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            missing.append((label, hint))
+    return missing
+
+
 def _show_repair_dialog(error_text):
     """窗口无法拉起时显示的自动修复对话框
     返回: "clear" -> 已清除缓存并准备重启; "repair" -> 已检查依赖; "exit" -> 退出"""
@@ -982,11 +998,19 @@ def _show_repair_dialog(error_text):
 
     def on_repair(event):
         missing = _check_dependencies()
+        optional = _check_optional_dependencies()
+        optional_text = ""
+        if optional:
+            optional_text = ("\n\n可选依赖缺失（不影响基础功能）：\n" +
+                             "\n".join(f"- {m}: {h}" for m, h in optional))
         if missing:
             wx.MessageBox(
                 "检测到以下依赖可能缺失：\n\n" + "\n".join("- " + m for m in missing) +
-                "\n\n请通过 pip 安装后重试。",
+                "\n\n请通过 pip 安装后重试。" + optional_text,
                 "依赖检查", wx.OK | wx.ICON_WARNING)
+        elif optional_text:
+            wx.MessageBox("未发现缺失的基础依赖。" + optional_text,
+                          "依赖检查", wx.OK | wx.ICON_INFORMATION)
         else:
             wx.MessageBox("未发现缺失的基础依赖。\n\n若仍无法启动，请尝试清除缓存。",
                           "依赖检查", wx.OK | wx.ICON_INFORMATION)

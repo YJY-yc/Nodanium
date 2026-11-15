@@ -210,6 +210,12 @@ except ImportError as e:
     print(f"导入 Ping 失败: {e}")
 
 try:
+    import Scanner
+except ImportError as e:
+    print(f"导入 Scanner 失败: {e}")
+    Scanner = None
+
+try:
     from update import *
 except ImportError as e:
     print(f"导入 update 失败: {e}")
@@ -1268,6 +1274,12 @@ def Window(silence=False):
     panel12 = wx.Panel(listbook)
     panel14 = wx.Panel(listbook)
     panel15 = wx.Panel(listbook)
+    panel18 = wx.Panel(listbook)
+    if Scanner is not None:
+        panel16, panel17 = Scanner.create_containers(listbook)
+    else:
+        panel16 = wx.Panel(listbook)
+        panel17 = wx.Panel(listbook)
     panel0.SetBackgroundColour(wx.Colour(255, 255, 255))
 
 
@@ -1284,6 +1296,8 @@ def Window(silence=False):
     panel13.SetBackgroundColour(wx.Colour(255, 255, 255))
     panel14.SetBackgroundColour(wx.Colour(255, 255, 255))
     panel15.SetBackgroundColour(wx.Colour(255, 255, 255))
+    panel16.SetBackgroundColour(wx.Colour(255, 255, 255))
+    panel17.SetBackgroundColour(wx.Colour(255, 255, 255))
 
 
     listbook.AddPage(panel0, "主页", imageId=_icon_id('icons/home.png'))
@@ -1302,6 +1316,14 @@ def Window(silence=False):
     listbook.AddSubPage(panel11, "文件服务", imageId=_icon_id('icons/filesever.png'))
     listbook.AddSubPage(panel6, "转发文件", imageId=_icon_id('icons/path_to_icon6.png'))  
     listbook.AddSubPage(panel14, "流量转盘", imageId=_icon_id('icons/traffic.png'))  
+    listbook.AddPage(panel18, "扫描", imageId=_icon_id('icons/scan.png'))
+    if Scanner is not None:
+        try:
+            listbook.AddSubPage(panel16, "主机发现", imageId=_icon_id('icons/scan_host.png'))
+            listbook.AddSubPage(panel17, "端口扫描", imageId=_icon_id('icons/scan_port.png'))
+        except Exception as e:
+            print(f"扫描面板加载失败: {e}")
+            logging.error(f"扫描面板加载失败: {e}")
     # 管理功能
     listbook.AddPage(wx.Panel(listbook), "管理功能", imageId=_icon_id('icons/manage.png'))
     listbook.AddSubPage(panel12, "端口管理器", imageId=_icon_id('icons/path_to_icon11.png')) 
@@ -1394,6 +1416,13 @@ def Window(silence=False):
 
     PingPanel(panel10)
     NetworkTraffic.create_panel(panel14)
+    if Scanner is not None:
+        try:
+            host_panel, port_panel = Scanner.build_panels(panel16, panel17)
+            host_panel.bind_book(listbook, "扫描")
+        except Exception as e:
+            print(f"扫描面板初始化失败: {e}")
+            logging.error(f"扫描面板初始化失败: {e}")
     
 
     logging.info('插件已完成加载')
